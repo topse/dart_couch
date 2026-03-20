@@ -1,0 +1,4 @@
+The project has the main goal to provide a replicating database by using a local database replicated with a couch db server. The main API is in DartCouchDb and DartCouchDbServer. Those interfaces are implemented twice, LocalDartCouchDb and LocalDartCouchServer and HttpDartCouchDb and HttpDartCouchServer. Then there is OfflineFirstDb and OfflineFirstServer which is the API to be used to have fully automated replication and offline availability of the data.
+The replication is implemented as a mixin, also the UseDartCouch Mixin, which provides an api, that notifies the application in case of data updates.
+OfflineFirstDb and OfflineFirstServer take care for all stuff regarding syncing existing databases and coordinate login and replication wheather network is currently available or not.
+Read all available source code and take care to get a overview about the complete features and the implementation. Explain the main features and the basic implementation.

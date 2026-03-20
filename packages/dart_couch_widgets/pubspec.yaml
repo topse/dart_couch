@@ -1,0 +1,22 @@
+name: dart_couch_widgets
+description: Flutter widgets and helpers for dart_couch - CouchDB offline-first library.
+version: 0.9.4+1
+publish_to: none
+
+environment:
+  sdk: ^3.10.0
+  flutter: ">=3.38.0"
+
+dependencies:
+  flutter:
+    sdk: flutter
+  dart_couch:
+    path: ../dart_couch
+  logging: ^1.3.0
+  path: ^1.9.1
+  wakelock_plus: ^1.4.0
+
+flutter:
+  uses-material-design: true
+dev_dependencies:
+  flutter_lints: ^6.0.0

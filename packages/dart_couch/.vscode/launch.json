@@ -1,0 +1,36 @@
+{
+    "version": "0.2.0",
+    "configurations": [
+        {
+            "name": "current_file",
+            "type": "dart",
+            "program": "${file}",
+            "windows": {
+                "env": {
+                    "PATH": "${env:Path};${workspaceFolder}\\example\\build\\windows\\runner\\Debug"
+                }
+            },
+            "linux": {
+                "env": {
+                    "LIBQUICKJSC_TEST_PATH": "${workspaceFolder}/example/build/linux/x64/debug/plugins/flutter_js/bundle/lib/libquickjs_c_bridge_plugin.so"
+                }
+            },
+            "request": "launch"
+        },
+        {
+            "name": "Run Example App",
+            "type": "dart",
+            "request": "launch",
+            "program": "${workspaceFolder}/example/lib/main.dart"
+        },
+        {
+            "name": "Run Example App (Chrome)",
+            "type": "dart",
+            "request": "launch",
+            "program": "${workspaceFolder}/example/lib/main.dart",
+            "args": [
+                "--web-browser-flag=--disable-web-security"
+            ]
+        },
+    ]
+}

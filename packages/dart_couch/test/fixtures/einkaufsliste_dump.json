@@ -1,0 +1,2152 @@
+[
+    {
+        "_id": "042a6700-3f5b-4819-857d-7a72579f7df7",
+        "_rev": "83-003090e7d0b977a85f03030eb85753cd",
+        "!doc_type": "item",
+        "name": "Fischstäbchen",
+        "erledigt": true,
+        "anzahl": 60,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "04cf16c2-feb2-4b40-9748-0b07febb53fb",
+        "_rev": "9-8157f78612cfc37ef66ecb89aa2d0ed6",
+        "!doc_type": "item",
+        "name": "Lauch",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse",
+        "anzahl": 1
+    },
+    {
+        "_id": "07f54b27-e37a-4794-b5f8-6beff0ca0741",
+        "_rev": "84-ecee58159d88d97427f988454395085c",
+        "!doc_type": "item",
+        "name": "Mozzarella",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "0b29845f-a23c-4523-9b6b-efdaee95d8a2",
+        "_rev": "6-614794fac37fc4a1a7d42ce3c781c836",
+        "!doc_type": "item",
+        "name": "Süßkartoffeln ",
+        "erledigt": true,
+        "anzahl": null,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "0b80786e-5015-4743-a69f-37d75b18761d",
+        "_rev": "9-3c32eb201a1c017a8fe5c1b397c40d4e",
+        "!doc_type": "item",
+        "name": "Kl. Joghurt für Karl ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "0d24f474-9388-4999-aa96-d84854d25e6b",
+        "_rev": "2-6ed35fffb4922ea406f1464bea55bf2c",
+        "!doc_type": "item",
+        "name": "Kernseife",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "0d5f2859-bc9b-4580-8061-9a15afc1be9e",
+        "_rev": "18-7ff62b61ff484baa0d3a4a4f203e09ef",
+        "!doc_type": "item",
+        "name": "Pommes Gut und günstig",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_kühl",
+        "anzahl": 2
+    },
+    {
+        "_id": "0f4994ab-2176-4539-9423-2e13765f7787",
+        "_rev": "19-967faa0c20fe6832258ddcab2d39e6fb",
+        "!doc_type": "item",
+        "name": "Backpulver",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_back_teig",
+        "anzahl": 1
+    },
+    {
+        "_id": "114622cf-f441-4a3f-8235-93d2f66b6041",
+        "_rev": "8-da5759bf9eced2643a9c89cf86b9615f",
+        "!doc_type": "item",
+        "name": "Haarshampoo Tobi",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "11a5469f-2073-4c78-87c9-9af6fabaa715",
+        "_rev": "76-bcb164d04eb26b789aa8924f249963dd",
+        "!doc_type": "item",
+        "name": "Salami",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "143b02cc-9681-46ef-a084-70044bcc8a93",
+        "_rev": "14-d0655d779308d3ffbbc65fe7bee2bb76",
+        "!doc_type": "item",
+        "name": "Melone",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "17783d19-7986-4678-9252-6d84ec8e9426",
+        "_rev": "16-335ef2081ac4c0fd2118c8cfb7b87987",
+        "!doc_type": "item",
+        "name": "Leicht und Kross",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "1814304f-6f83-4e91-b5be-9a1f8d3226a0",
+        "_rev": "23-e1861e7dd3a708e077ebbb0a02e3baed",
+        "!doc_type": "item",
+        "name": "Brause biozisch",
+        "erledigt": true,
+        "anzahl": 5,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "18638a0c-6e39-4d6e-8bad-23dd9a5e38ba",
+        "_rev": "8-1ceb17ae4758151d6bdeeb2ab51c8bfd",
+        "!doc_type": "item",
+        "name": "TK Erdbeeren ",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "19064ab2-95a1-4807-96ab-b7a3c414b29c",
+        "_rev": "11-6a384324c00853bcc615150b805a6107",
+        "!doc_type": "item",
+        "name": "Röstzwiebeln",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "1a6fc0de-ec9d-4607-b745-468c37b27865",
+        "_rev": "47-f4fa8c21d0efd4946f091fba4ad34267",
+        "!doc_type": "item",
+        "name": "Vanillezucker DM",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "1ab5932b-ff86-498f-bc40-3960c668ed48",
+        "_rev": "12-1d57c002494e5586b0cf014886355a48",
+        "!doc_type": "item",
+        "name": "Nektarinen",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "1b3395f9-3ff5-4702-85c4-d775f8d089c7",
+        "_rev": "7-bd5e11de6616033c4c1c07eea3054293",
+        "!doc_type": "item",
+        "name": "Lorbeerblätter",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "1c2e3536-a216-47c6-ade3-2ff5188d59ae",
+        "_rev": "9-1c68b02ed6aa409506dafe576aa535a3",
+        "!doc_type": "item",
+        "name": "Feuchtes WC Papier, spültauglich",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "1cc80c05-532f-46d2-8ef1-c91578942983",
+        "_rev": "17-453ee2521a46b4badbe91e1419b058a3",
+        "!doc_type": "item",
+        "name": "Handseife flüssig",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "1e11aec5-e4cb-4b52-8a8c-c550ae8dce11",
+        "_rev": "48-85b7187907babfa5e1adba8a52b311dd",
+        "!doc_type": "item",
+        "name": "Zucchini",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "1e63b661-7e90-4204-a057-1fb7c2753a82",
+        "_rev": "6-76ee062f3d67f11b2d930bc27c7def7f",
+        "!doc_type": "item",
+        "name": "Balsamico",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "1ec62a60-bbac-4c28-a703-fb176574c7cd",
+        "_rev": "6-cbfd38863e8595fc3ea8a14ced893696",
+        "!doc_type": "item",
+        "name": "Krautsalat ",
+        "erledigt": true,
+        "anzahl": "100",
+        "einheit": "g",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "1ef7121f-53e2-4dd9-9736-a1e03f7bab07",
+        "_rev": "2-bc51669c8411ce85ca825c87f3212968",
+        "!doc_type": "item",
+        "name": "Birne",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "20574dff-2a00-4ccb-af70-11efd0d13a99",
+        "_rev": "2-d35860f4c3a22e2aef27b3a86866498f",
+        "!doc_type": "item",
+        "name": "Buchweizenmehl",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "22b0bb83-20b4-45ed-a88b-61a0977d7ac3",
+        "_rev": "14-f56465e1bc70443302a958a4c8af2eec",
+        "!doc_type": "item",
+        "name": "Margarine",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "25db67d1-eb4d-4a28-90ca-ce83d50f8b2e",
+        "_rev": "40-a5493672965b003316219252edfe1001",
+        "!doc_type": "item",
+        "name": "Nudeln gemischt",
+        "erledigt": true,
+        "anzahl": 5,
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "27a18427-326a-43d9-b43f-b4799416f268",
+        "_rev": "50-e7a138c8fa3eeb77f3fbf1ba0fe58c9c",
+        "!doc_type": "item",
+        "name": "Eisbergsalat",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "28034922-20a2-49dc-962a-0872b7d0fd41",
+        "_rev": "4-2f02a935e595c6a8fea5af8fff08381a",
+        "!doc_type": "item",
+        "name": "Fruchtjoghurt Erdbeere",
+        "erledigt": true,
+        "anzahl": "4",
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "2837e1d0-8e03-4d20-8520-f32f700233dc",
+        "_rev": "37-f52fc03b5d8bdba6b05abf9b8f09c0d3",
+        "!doc_type": "item",
+        "name": "Apfelmus",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse",
+        "anzahl": 2
+    },
+    {
+        "_id": "284d654f-ea5f-44d4-a4e3-ee6fbd78e379",
+        "_rev": "255-bfb731cb3c942700d7e741f9b087bfd8",
+        "!doc_type": "item",
+        "name": "Banane",
+        "erledigt": true,
+        "anzahl": null,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "28f2babe-06ab-4e9c-9b3b-99ebb27475ce",
+        "_rev": "2-390c0a9133fbde731bae00fa1e12bbc0",
+        "!doc_type": "item",
+        "name": "Makeup Entferner",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "29adcd69-c80d-46f9-92dc-08605b802a9a",
+        "_rev": "2-82c9f9203082def9b476fbde1c9ff014",
+        "!doc_type": "item",
+        "name": "Grillkäse",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "29c1f160-f83c-41fb-8101-47ced231ce46",
+        "_rev": "18-a4c870d0f8fa209085e4a703a125617f",
+        "!doc_type": "item",
+        "name": "Tomatenmark",
+        "erledigt": true,
+        "anzahl": "10",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "2a16dcfa-1429-432d-bde5-3006234587f8",
+        "_rev": "59-a4351f6589c3d805064f3de28715e8fd",
+        "!doc_type": "item",
+        "name": "Ketchup",
+        "erledigt": true,
+        "anzahl": 3,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "2a4207ad-1575-4a23-82a5-b20d6f7178df",
+        "_rev": "2-de56ec36ba6ebd6eca73a82e4a3117a8",
+        "!doc_type": "item",
+        "name": "Tunfisch im eig. Saft ",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "2d15dfb2-ee71-4ef1-aab9-a97a1bce6076",
+        "_rev": "2-0861a16c4741b1afe3dd82c62b9d7fb4",
+        "!doc_type": "item",
+        "name": "Knoblauchsoße werder",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "2f8ead5a-6489-45c8-a6eb-63c5f125ca0c",
+        "_rev": "6-2592a7bdcb9daf09e67579146be44049",
+        "!doc_type": "item",
+        "name": "Weiße Schokolade-macadamia- aufstrich",
+        "erledigt": true,
+        "anzahl": "4",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "3099b6e6-af83-4916-8b73-02f1114e7c90",
+        "_rev": "46-8e44a576b29707ae1e563fe61c81020c",
+        "!doc_type": "item",
+        "name": "Aubergine",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "30c93819-9ffe-4040-8ba3-bea916e5a210",
+        "_rev": "96-c96c72ab04e28c10a0534a5341b4c285",
+        "!doc_type": "item",
+        "name": "Old Amsterdam Scheiben",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "320c84d0-ab86-4ce1-9ab0-2787e41488db",
+        "_rev": "4-5160bb0079c355cb7ad187c3766ae1e3",
+        "!doc_type": "item",
+        "name": "Soßenpulver",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "33e1fd8c-3eee-4e12-bf43-db72de2074b4",
+        "_rev": "62-7238120608b76eba55e913f28166ac2d",
+        "!doc_type": "item",
+        "name": "Feta",
+        "erledigt": true,
+        "anzahl": 3,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "355041bd-ae91-47bd-999d-832a1696f65b",
+        "_rev": "74-f4c460c34a8cc6c61caffd68aca605a7",
+        "!doc_type": "item",
+        "name": "Gouda Stück",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "36748285-4699-4e28-bb3d-1155727cc89e",
+        "_rev": "40-816be6cdab5d33488e167ea71e89a94b",
+        "!doc_type": "item",
+        "name": "Hefe Dr Oettker",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "36dd76e8-e18e-47d9-b20e-5ea0bc2b8186",
+        "_rev": "3-ba6640a5fee81611b5b146fd03244791",
+        "!doc_type": "item",
+        "name": "Vollwaschmittel ",
+        "erledigt": false,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "3949e98f-3a74-4d56-86d6-087326eeb007",
+        "_rev": "80-c3e58309954b403d76d42e4615b90a18",
+        "!doc_type": "item",
+        "name": "Zwiebeln",
+        "erledigt": false,
+        "anzahl": "1",
+        "einheit": "kg",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "3a7709aa-1eda-4db1-bfc7-9a8fa5fcc307",
+        "_rev": "2-54dbba501f24795e8b24513b4d60bf67",
+        "!doc_type": "item",
+        "name": "Reinigungsmilch Mona ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "3aba28ee-e72b-423b-93e6-b0cb22f4c643",
+        "_rev": "2-693bc53af0cdd6869e2ba9a1995d0e06",
+        "!doc_type": "item",
+        "name": "Frosta Fertiggerichte ",
+        "erledigt": true,
+        "anzahl": "5",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "420325df-ba8d-46d9-a3de-caa57436e860",
+        "_rev": "6-e665cce2e2de0395bf903ff1d90831a9",
+        "!doc_type": "item",
+        "name": "Tortellini ",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "42b95785-6c80-444b-bbd8-adb5a236d037",
+        "_rev": "22-581a2ddedc92eb40317bd7b21bac0198",
+        "!doc_type": "item",
+        "name": "Himbeeren",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "43650d37-cb18-428a-a60c-8233dba52a75",
+        "_rev": "33-f163d9e452deaaf77ac45d709c467d38",
+        "!doc_type": "item",
+        "name": "Pizzafertigteig",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_kühl",
+        "anzahl": 1
+    },
+    {
+        "_id": "454e77c1-23c4-4bd8-bac8-ac619a0da6be",
+        "_rev": "2-c069dd6f7d97b662999dcd0ce77ba793",
+        "!doc_type": "item",
+        "name": "Pesto mit Olivenöl ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "465bb18f-1bea-4175-9ea5-96ebfc6b8c5a",
+        "_rev": "80-500751c653625f6911a54c3664323a26",
+        "!doc_type": "item",
+        "name": "Gurke",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "465d6694-1cf0-4737-a747-a478094833a5",
+        "_rev": "16-fe0be21811f30deea4190a8b9151c142",
+        "!doc_type": "item",
+        "name": "Müllbeutel 35l",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges",
+        "anzahl": 3
+    },
+    {
+        "_id": "468e9d5a-6130-43e2-bbcd-39197117d6e8",
+        "_rev": "12-ba8953f556fb98a0bdcf922c83308952",
+        "!doc_type": "item",
+        "name": "Curry",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "478acfc5-e884-4db0-83c9-73d7e7965b3b",
+        "_rev": "14-7aca7c352791e928b7176bf4eead1e23",
+        "!doc_type": "item",
+        "name": "Weintrauben ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "47f44faf-7868-4b59-b2e7-f4922876a6fb",
+        "_rev": "2-75f0e809afd9ad7eed9b8c0038643114",
+        "!doc_type": "item",
+        "name": "Grüelner Pudding mit weißer Soße",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "4808fd10-5268-421c-92b0-9c896f59e5cd",
+        "_rev": "98-412cf1037274c74c66034b6a2dc79055",
+        "!doc_type": "item",
+        "name": "Aufbackbrötchen",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "4ad19e76-4e2f-48ed-934d-f4e71e210e64",
+        "_rev": "87-1426fd8c80c34ae186bffd561614e4e3",
+        "!doc_type": "item",
+        "name": "Eier Harms",
+        "erledigt": false,
+        "anzahl": 12,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "4de989ed-1eec-45cd-950f-6483da6b8074",
+        "_rev": "2-34376509d5d3260dddf1111415820880",
+        "!doc_type": "item",
+        "name": "Schwarzer Tee beutel",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "4f6fb97f-e13a-49a5-9cbb-8f96524f113f",
+        "_rev": "29-46258efa6db4d7c1368f15b8972512f3",
+        "!doc_type": "item",
+        "name": "Eis",
+        "erledigt": false,
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "4fe87fef-6116-47a6-8af1-4421c54da09c",
+        "_rev": "21-09714899b9d5507d3a8121817a6f6e16",
+        "!doc_type": "item",
+        "name": "Mandarinen Dose ",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "5174183f-16af-4757-a341-0a58422e8851",
+        "_rev": "2-1611e1de1d2f25b92544be105c19973e",
+        "!doc_type": "item",
+        "name": "Shampoo Tobi ",
+        "erledigt": true,
+        "anzahl": "3",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "538ab1f0-3b86-4f0f-9cc7-74bf7ae93829",
+        "_rev": "13-b94c1e52975c00496cbc4a024337b4f3",
+        "!doc_type": "item",
+        "name": "Gelierzucker 3:1 und Erdbeeren",
+        "erledigt": true,
+        "anzahl": "",
+        "einheit": "",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "57ac771c-bedc-40f2-8af2-4403871da5a0",
+        "_rev": "2-6b09e4d49750323e0258a6e0b62a3b66",
+        "!doc_type": "item",
+        "name": "Wein-Gummi ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "586adb0f-6247-4091-9eb2-eb3adad2dfad",
+        "_rev": "13-cc630f29cf5b3030a6dd733d1f5c64ea",
+        "!doc_type": "item",
+        "name": "Flammkuchen Boden",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_kühl",
+        "anzahl": 2
+    },
+    {
+        "_id": "59dfb41b-aa8a-4440-baf7-fbbe8b77f6d7",
+        "_rev": "34-c0b5c4cf2370a9520350d7a59455c6d0",
+        "!doc_type": "item",
+        "name": "Apfelsaft",
+        "erledigt": true,
+        "anzahl": "3",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "5a4d18c6-1aeb-4083-8aa9-3f592757ec7e",
+        "_rev": "2-ecfe1b8528171f4f5814fbb599165cb1",
+        "!doc_type": "item",
+        "name": "Salat",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "5b538d5b-5bcf-42f5-a666-90c5dc98ec15",
+        "_rev": "12-c8e10f8bb5613a67950682a80734bbb1",
+        "!doc_type": "item",
+        "name": "Spinat TK",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "5bd2e774-8c21-458c-aeaf-ded19b973f45",
+        "_rev": "25-01757cec5f2ef5c59969a4bd6464d31a",
+        "!doc_type": "item",
+        "name": "Creme Fraiche",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_kühl",
+        "anzahl": 1
+    },
+    {
+        "_id": "5f7875ec-72d0-4aef-825e-54031439c9ab",
+        "_rev": "6-f3f07e73f5572d6a272b92b55ecf32a3",
+        "!doc_type": "item",
+        "name": "Einmalhandschuhe",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "67b9ce2d-bb9f-4b63-94de-e545cc652857",
+        "_rev": "16-4f791c6c4fc2bf7726ee6c894d230ab9",
+        "!doc_type": "item",
+        "name": "Maisdose klein",
+        "erledigt": true,
+        "anzahl": "3",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "6950da2f-cad5-4e3c-8114-60292b76ece5",
+        "_rev": "156-1b6db05109b5224715bca718ac7e4c40",
+        "!doc_type": "item",
+        "name": "Paprika",
+        "erledigt": false,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "6a4a2bd5-bc3c-42d5-9a54-fab35b17ecca",
+        "_rev": "4-5ca4a5607422ebe915cc8910adf8527d",
+        "!doc_type": "item",
+        "name": "Paniermehl",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "6abc6ed5-d39f-4e33-9275-8a55e289439d",
+        "_rev": "2-3ebabe8581e79fef7ca2492270b2e525",
+        "!doc_type": "item",
+        "name": "Nutella Tobi",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "6b8c3241-ed5b-491d-bf0d-f22440e92fff",
+        "_rev": "4-8a3e57c30797ea1d44c4c549c23e76c7",
+        "!doc_type": "item",
+        "name": "Nudelplatte",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "72cd7bb5-ae67-450e-b3e0-e45a4c5d12eb",
+        "_rev": "88-4f7515d593a3b39abaacbc7e2135df31",
+        "!doc_type": "item",
+        "name": "Toilettenpapier",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "75c5d5c4-f954-4ae8-a537-c0145953a83b",
+        "_rev": "6-274a8c24855133c1f6a18effcea802a2",
+        "!doc_type": "item",
+        "name": "Zimt",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "76a55686-4bf4-46e5-ad41-c65971c476b9",
+        "_rev": "87-767fdc204bc83e59b0a3c0af69eacb29",
+        "!doc_type": "item",
+        "name": "Toastbrot",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "76e2f924-3f36-4dd6-beef-04e4958ea3ad",
+        "_rev": "4-1306456650c96b571b351aa973191352",
+        "!doc_type": "item",
+        "name": "Brausetabletten ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "7730d51c-96ed-4d69-a12d-367379f47dd0",
+        "_rev": "1-d29ae4f241a9ac4e8d5f467894aefd9d",
+        "!doc_type": "item",
+        "name": "Pistaziencreme",
+        "erledigt": false,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "77add559-8a11-4879-86be-77bfb9ca9410",
+        "_rev": "2-6eb87f1c5fb8104411ca3a951280f171",
+        "!doc_type": "item",
+        "name": "Kontaktlinsen ",
+        "erledigt": true,
+        "anzahl": "7",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "77d473a0-48ca-458c-98bb-11cc18204136",
+        "_rev": "25-084257bc960b10b26facf9561e6bb42d",
+        "!doc_type": "item",
+        "name": "Windeln Größe 7 ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "78b19868-45f5-4a5d-a245-eb1383e6e32b",
+        "_rev": "28-ff666cec887f87d3fe95c36b78fe7b1c",
+        "!doc_type": "item",
+        "name": "Zucker",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "7aa59c8a-7594-496d-adb7-39d26d496e20",
+        "_rev": "17-ad6ba14ec19655fc549e1489d9e2a16f",
+        "!doc_type": "item",
+        "name": "Milchreis",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_back_teig",
+        "anzahl": 1
+    },
+    {
+        "_id": "7b0983a2-699c-4bde-9f8f-5aa746b340a3",
+        "_rev": "27-75d17e7ec9ef194becb8b12225759cc0",
+        "!doc_type": "item",
+        "name": "Bratwurst",
+        "erledigt": true,
+        "anzahl": 8,
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "7b8f2f26-2788-4d3d-bd0f-306563bd5b3e",
+        "_rev": "4-c482fc54be6605d69c93c35b8f09329a",
+        "!doc_type": "item",
+        "name": "Schokopudding",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "7c7f023b-7d25-4348-b892-90756365efd1",
+        "_rev": "41-954b05092a258d104346e4e0f430a313",
+        "!doc_type": "item",
+        "name": "Italienisches Gewürz",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges",
+        "anzahl": 1
+    },
+    {
+        "_id": "7c8a7d61-fdf9-45f8-8bb6-78468493b810",
+        "_rev": "4-ee59c3a5ecfd0bf8cb8118d0a4c11726",
+        "!doc_type": "item",
+        "name": "Mineralwasser ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "7d1c403d-2fa5-4ee2-b422-19fefa9ea42f",
+        "_rev": "133-f14916ba9aa382c433b99214a7c10e34",
+        "!doc_type": "item",
+        "name": "3x Allnatura Quark, 300g Erdbeeren Alnatura",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges",
+        "anzahl": 2
+    },
+    {
+        "_id": "7e182bc2-c565-431b-931f-20cac0ef297c",
+        "_rev": "48-632fa31398bedf58dee1c17a84aefcf8",
+        "!doc_type": "item",
+        "name": "Ananas Dose",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "7e2ae22f-5eae-4d27-b0e1-c4c88febe264",
+        "_rev": "16-6a363aaf6320d34c7cf68730363b40a2",
+        "!doc_type": "item",
+        "name": "Schinken",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "7e2f903e-6763-45e6-b09a-9c345f5835c5",
+        "_rev": "76-a3737cb0fcfbcfaee854fb6f26bd4438",
+        "!doc_type": "item",
+        "name": "Frischkäse Kräuter",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "805bd7b7-d79c-46e9-bb21-6bae245a7e81",
+        "_rev": "26-7262f7dbd240e79ad9a0c3f7a82871c5",
+        "!doc_type": "item",
+        "name": "Taschentücher",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "806a522a-2473-4b4a-aa44-88a00a9785f0",
+        "_rev": "2-ccfdd38fa4e03cc1d96129cc63a05285",
+        "!doc_type": "item",
+        "name": "Einmalhandschuhe DM M",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "80b6ced3-8ba1-4f0a-97ba-650127626e48",
+        "_rev": "4-c98df5973e975e83c78ee602ca0844db",
+        "!doc_type": "item",
+        "name": "Leberwurst ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "82b13143-a091-4eb7-af7b-2c7a11b4f28c",
+        "_rev": "18-33ab68cfe3afcc01c358cfe60b3e2e1e",
+        "!doc_type": "item",
+        "name": "Kräuterbutter",
+        "erledigt": true,
+        "anzahl": null,
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "864ebcec-79bc-49fe-a0ed-ccc6f522cc33",
+        "_rev": "16-c1c5430d6700ed6039ca002c0d81cbce",
+        "!doc_type": "item",
+        "name": "Nürnberger",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "870f5a92-5123-471e-a4e3-4f2f0007c16c",
+        "_rev": "14-6a97863192a4e2915d47b8bb22ea3e82",
+        "!doc_type": "item",
+        "name": "Pfeffer bunt",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "87700787-0a5b-4af2-b1e9-2ac2d77d570c",
+        "_rev": "6-ded42d1a0958988a1a0c9d605e86f041",
+        "!doc_type": "item",
+        "name": "Sonnenblumenöl",
+        "erledigt": true,
+        "anzahl": 19,
+        "einheit": "Liter",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "87b7d0e1-18b6-4e84-be1e-ec373f412c5f",
+        "_rev": "10-837fc073ed4af2d8a7a2b6a4a158eaf5",
+        "!doc_type": "item",
+        "name": "Marmelade",
+        "erledigt": true,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "885089b2-bb4a-486c-8fed-92074730c798",
+        "_rev": "2-97bb482696f3cb85ec07fa177577f590",
+        "!doc_type": "item",
+        "name": "Alufolie",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "8d25bd5d-5e4a-42cc-be37-486b098a9267",
+        "_rev": "2-a08b65f0c4316da28dd68888a5844c84",
+        "!doc_type": "item",
+        "name": "Wackelpudding Pulver rot + grün",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "8ee6148e-5a31-4ed3-8afc-490452448d30",
+        "_rev": "4-ac5bf57c2164964c3172e9f4b88672cd",
+        "!doc_type": "item",
+        "name": "Marmelade DM amarena kirsch",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "8fd8b1d3-9036-4d63-ac64-a4820d773da2",
+        "_rev": "5-1b3a16e6fe6ac19b6cf3e2d030fff14c",
+        "!doc_type": "item",
+        "name": "Erdnüsse für Zoo ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "92cedb3a-6ff1-45ec-8f38-f4989b588e01",
+        "_rev": "4-e7c80e3978cd5572ee0c887c21ea6699",
+        "!doc_type": "item",
+        "name": "Feigen",
+        "erledigt": true,
+        "anzahl": "3",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "930c5611-9f11-4b39-b9a9-cca53579b23f",
+        "_rev": "35-a2b9232b399741532165a083aae2209c",
+        "!doc_type": "item",
+        "name": "Taschentuch Tempobox",
+        "erledigt": true,
+        "anzahl": "3",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "954c750a-cf6d-4484-b20e-7de2125ef496",
+        "_rev": "13-a17168aeb99e41c30b38a8ed5f14d208",
+        "!doc_type": "item",
+        "name": "Kaffeepads",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "9613836f-1527-402f-971a-055c563e0903",
+        "_rev": "2-8792db7a6f99f5017e09a5f4bf02bb4c",
+        "!doc_type": "item",
+        "name": "Universalreiniger",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "97288cb0-49a4-47e4-bafd-d4cdcd141591",
+        "_rev": "10-a39dd88538c6cbfef895a86778fc11fd",
+        "!doc_type": "item",
+        "name": "Ruccula",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "975112e3-761d-4be5-93ae-ee300485d23a",
+        "_rev": "26-42511983826f27e68ab3b4a6dd56206a",
+        "!doc_type": "item",
+        "name": "Salz",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "987029bd-d7fb-4b19-b937-364ab0d775a8",
+        "_rev": "9-5e9f61904a9fa687aa4078f24920afcb",
+        "!doc_type": "item",
+        "name": "Leerdamer",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "99b5e48f-1dba-4fda-8124-a19ca219d90e",
+        "_rev": "63-d0e740cbafaaee834590960220a1494f",
+        "!doc_type": "item",
+        "name": "Fleischwurst, vegetarisch Gutfried",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "9affa183-7c0c-42f1-b092-0f331e514ff3",
+        "_rev": "2-1a73ec8126cd6a861fe9ddaed6e34245",
+        "!doc_type": "item",
+        "name": "Paprikagewürz nicht scharf",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "9cd827eb-3ed5-44f1-becc-9807f0af3586",
+        "_rev": "6-5063a07cd81d3ba89322e3b72ef8709f",
+        "!doc_type": "item",
+        "name": "Preiselbeeren",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "9e09989e-42cb-4a44-bbaf-615b17f9e731",
+        "_rev": "8-7b9155784689c8aae6cba3c92c98582b",
+        "!doc_type": "item",
+        "name": "Schmand",
+        "erledigt": true,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "9e46d6e0-f0c2-427f-a9e8-689a67ae809e",
+        "_rev": "31-b98dca47b48e26f167721f840e1c9e1d",
+        "!doc_type": "item",
+        "name": "Basilikum",
+        "erledigt": true,
+        "anzahl": null,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "9f57013d-de7f-4070-9f9f-e19461e59ad0",
+        "_rev": "10-7a65d30409e162da3406d3811c97c6f1",
+        "!doc_type": "item",
+        "name": "Körniger Frischkäse ",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "_design/einkaufslistViews",
+        "_rev": "1-d7bd344ed4b214e2149fb3768cd5ac22",
+        "views": {
+            "itemsView": {
+                "map": "function (doc) { if (doc['!doc_type'] !== undefined && doc['!doc_type'] === 'item') emit(doc.name, doc); }"
+            },
+            "categoryView": {
+                "map": "function (doc) { if (doc['!doc_type'] !== undefined && doc['!doc_type'] === 'category') emit(doc.name, doc); }"
+            }
+        }
+    },
+    {
+        "_id": "_design/idx-1b14c5d5dc0a4243e4ce98acefa23933",
+        "_rev": "1-dcc80563a8a2a37e299175df4ea4e420",
+        "language": "query",
+        "views": {
+            "idx-1b14c5d5dc0a4243e4ce98acefa23933": {
+                "map": {
+                    "fields": {
+                        "!doc_type": "asc",
+                        "sorthint": "asc"
+                    }
+                },
+                "reduce": "_count",
+                "options": {
+                    "def": {
+                        "fields": [
+                            "!doc_type",
+                            "sorthint"
+                        ]
+                    }
+                }
+            }
+        }
+    },
+    {
+        "_id": "_design/idx-2df7df75fd8a790d61ca5775b1cdd7c3",
+        "_rev": "1-ff13fbd6400a0da92bb71b4c4f647923",
+        "language": "query",
+        "views": {
+            "idx-2df7df75fd8a790d61ca5775b1cdd7c3": {
+                "map": {
+                    "fields": {
+                        "!doc_type": "asc",
+                        "name": "asc"
+                    }
+                },
+                "reduce": "_count",
+                "options": {
+                    "def": {
+                        "fields": [
+                            "!doc_type",
+                            "name"
+                        ]
+                    }
+                }
+            }
+        }
+    },
+    {
+        "_id": "a13f088d-b03f-4c5b-bd2f-6faa3d633cc7",
+        "_rev": "23-3a62cc69363672649c2ee159f988946e",
+        "!doc_type": "item",
+        "name": "Geschirrspülpulver",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "a22d0a62-a529-4e9b-a4f3-78e322e07271",
+        "_rev": "29-f1f6a6bb4e1ca7484ba1b4bfc79ede1e",
+        "!doc_type": "item",
+        "name": "Hamburgerbrötchen",
+        "erledigt": true,
+        "anzahl": 4,
+        "einheit": "",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "a324214a-f3fd-45d8-8f43-4da7cbc85312",
+        "_rev": "20-59d13aa6204fb61c9adf39668b85c285",
+        "!doc_type": "item",
+        "name": "Puderzucker",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "a3b0d2ac-045c-4afb-a47e-9fbf5ebc932f",
+        "_rev": "61-a5d6a336c7d412d4723ca990bfabcd1d",
+        "!doc_type": "item",
+        "name": "Parmesankäse",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_wurst_käse",
+        "anzahl": 1
+    },
+    {
+        "_id": "a409b4fc-848b-42e6-af46-693a82914a5a",
+        "_rev": "16-3e6965a3cdad861ef445453bb285b9ec",
+        "!doc_type": "item",
+        "name": "Mango",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "a4e60232-78c2-43b6-8a38-9a89a1337fc8",
+        "_rev": "56-bbabadbad9971fdaafbbc3a5afc88353",
+        "!doc_type": "item",
+        "name": "Schokomüsli DM",
+        "erledigt": true,
+        "anzahl": 3,
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "a551ad17-14db-4fd8-b992-b96c99bbd2f5",
+        "_rev": "21-9fdfd9b2104a2a9a6f3943b1fa0f3682",
+        "!doc_type": "item",
+        "name": "Fusili Dinkel",
+        "erledigt": true,
+        "anzahl": "5",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "a5bedb70-af79-4ef6-a13c-e8ceb4143d72",
+        "_rev": "4-cc10bfa5c94f5ba5eef0f307d7d18ba9",
+        "!doc_type": "item",
+        "name": "Klarspüler Geschirrspüler",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "a7f19510-833f-45dd-94a9-cec600720a2d",
+        "_rev": "2-ec3436f40c98e99e09c25c99151f4d32",
+        "!doc_type": "item",
+        "name": "Majo",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "a95add41-c889-4797-8441-1cf3b3d0ec71",
+        "_rev": "313-f0778e1cda02cc0716c2c46f1f200e81",
+        "!doc_type": "item",
+        "name": "Milch",
+        "erledigt": true,
+        "anzahl": 4,
+        "einheit": "Liter",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "ada00678-020a-409a-866a-b63bb09dbe98",
+        "_rev": "356-c04d41ac5debe8c8a53927ede58149d6",
+        "!doc_type": "item",
+        "name": "Joghurt",
+        "erledigt": true,
+        "anzahl": 4,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "af095dae-b308-4016-81e2-2b821ef2a569",
+        "_rev": "11-0ef28b40480635d38d0e2b0ac6c06678",
+        "!doc_type": "item",
+        "name": "Backpapier",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "afe24384-ac04-453a-a284-10c9b7956f99",
+        "_rev": "16-470b0e3bfb3150b5aaa07309aeb8bfdf",
+        "!doc_type": "item",
+        "name": "Kirschen (Glas)",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b063febe-5d8b-4e43-8d77-e747277e89fe",
+        "_rev": "14-5e56ba49b60c74af402fbfe77799e233",
+        "!doc_type": "item",
+        "name": "Senf",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b0834155-8e3e-4270-8808-087ebf099e5a",
+        "_rev": "22-e7aa07b81178f4f29786462665cfdfee",
+        "!doc_type": "item",
+        "name": "Gnocchi",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "kg",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "b170976f-64b0-4284-85bc-8adf1c712f3e",
+        "_rev": "30-4518ad92fa017dcfd9f961b25e4372c2",
+        "!doc_type": "item",
+        "name": "Ananas frisch",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "b1c25312-648b-4e7b-83a6-5dca2f44b441",
+        "_rev": "8-369218c48ced645b01b8f269c0183de7",
+        "!doc_type": "item",
+        "name": "Fertigsoße",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b21c4e91-eb1e-4098-bb1c-e1f5d4bc8630",
+        "_rev": "4-778f674a9355ac475e83cbd1194c853e",
+        "!doc_type": "item",
+        "name": "Jägersoße",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b2465726-7180-4828-8192-1cd48a4b995a",
+        "_rev": "4-63e386bb1704489e1fc9ad4649ca14da",
+        "!doc_type": "item",
+        "name": "Rapsöl",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b26c5791-36f8-4318-b72b-86f85e7f4bf4",
+        "_rev": "2-59db0a487e616e9d5eee81da6470fa05",
+        "!doc_type": "item",
+        "name": "Magnesium ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b2a3211e-62df-416d-bca9-bd1cbe73a69e",
+        "_rev": "91-31e30488ba47d83eb4f99166e6fb75eb",
+        "!doc_type": "item",
+        "name": "Kartoffeln",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "b43c8577-f889-46d2-9c65-aeb93b6655dc",
+        "_rev": "20-9821deb5f94bc9c3e5dd7e117707ad5a",
+        "!doc_type": "item",
+        "name": "TK Laugenstangen ",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "b45c91b4-b705-431c-975a-5f1768616f74",
+        "_rev": "2-fd5d2367d4c1615d14811fe1b5dd9adf",
+        "!doc_type": "item",
+        "name": "Rolle Butterbrotpapier.",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b51bdc30-e2e1-46bd-ae39-f37d4c7744d1",
+        "_rev": "4-fca75336c6b8a62702d7e75efcdfa249",
+        "!doc_type": "item",
+        "name": "Haferflocken",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b571f6f3-33ab-4e63-b1f2-8fa9490ae2ff",
+        "_rev": "55-8df99785dc2d012fe0500b8c05f32fae",
+        "!doc_type": "item",
+        "name": "Kräuterquark",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "b59abed0-3509-4519-8111-b125a687bcf5",
+        "_rev": "31-481f2f5b2a486a2507a41c9d564bfc68",
+        "!doc_type": "item",
+        "name": "Buttergemüse nicht Edeka Bio!!",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "b59f6f91-6395-4a69-a18f-d477add35c3d",
+        "_rev": "98-9dc8f05c51dd4fec355b5409fb571ddd",
+        "!doc_type": "item",
+        "name": "Frischkäse Natur",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "b5c1bbe8-2aa4-4495-a4c1-4fc4e93b5e7f",
+        "_rev": "98-5d43d1535ed3bfcbaa25b29ca44ccb01",
+        "!doc_type": "item",
+        "name": "Buttermilch",
+        "erledigt": true,
+        "anzahl": null,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "b865d692-14fd-478c-b39e-07b713640f72",
+        "_rev": "35-37ba3eb4ef9c4ad7ba458f71247932d9",
+        "!doc_type": "item",
+        "name": "Kleine Tomaten",
+        "erledigt": false,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "b8be2bd7-b63f-4bc8-b1ac-36502c08bd87",
+        "_rev": "4-aec351f4a76eddd0ccd9f5a9b272c9e7",
+        "!doc_type": "item",
+        "name": "Lachsschinken",
+        "erledigt": true,
+        "anzahl": "100",
+        "einheit": "g",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "bd14eb97-1222-4f25-95de-ffc90a0fdf4e",
+        "_rev": "2-4ad5b56e09dbc7643f71fc6b857984ba",
+        "!doc_type": "item",
+        "name": "Bimstein",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "bd1f1370-96ac-47b9-8283-37543f32f470",
+        "_rev": "143-b3235b2afa0d46e854b2b520a8d4af6b",
+        "!doc_type": "item",
+        "name": "Kiwi",
+        "erledigt": true,
+        "anzahl": 8,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "bf53019e-c334-4ef0-b84b-3772e47d55de",
+        "_rev": "2-a81ea70bc7734f158325279b04f4754c",
+        "!doc_type": "item",
+        "name": "Rosenkohl tk",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "bf57baae-bd10-4b69-89db-419067896378",
+        "_rev": "14-4eb8eedfe3f8bebe6751db7e3449589d",
+        "!doc_type": "item",
+        "name": "Calgon",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "c1bba3ed-7115-46d9-a43a-aef057a0f9eb",
+        "_rev": "14-f2bbe5e70e06501b888b70b3d2003ea0",
+        "!doc_type": "item",
+        "name": "Spüli Pril",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "c42c1ee5-0409-4027-bf7c-c7a5e02186aa",
+        "_rev": "18-9f460f38babe10a74ac8321d979820fa",
+        "!doc_type": "item",
+        "name": "Q10 Doppelherz ",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges",
+        "anzahl": 3
+    },
+    {
+        "_id": "c4ecd994-e656-4b6e-83d2-ecd7ad225ab6",
+        "_rev": "10-da1cae10deac8a55e136e9f61ade6f82",
+        "!doc_type": "item",
+        "name": "Kinderzahnpasta",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "c530d15a-99fb-409d-97fe-d68c14a7c6fb",
+        "_rev": "43-33322038e409c2b647f656d2b27294db",
+        "!doc_type": "item",
+        "name": "Champigons",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "c65c96f0-fadc-4d66-b5ff-b777a99677b9",
+        "_rev": "91-6b1851507c0c4c78fc3e272d2d2fb518",
+        "!doc_type": "item",
+        "name": "Rinderhack",
+        "erledigt": true,
+        "anzahl": 500,
+        "einheit": "g",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "c6f29328-e3da-4820-86e5-1aadce951b49",
+        "_rev": "29-70589febc954f64fc3d949f2f9be5ab9",
+        "!doc_type": "item",
+        "name": "Streukäse",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "c728221c-9db1-426e-8282-3fcf4f26998d",
+        "_rev": "6-c38cf00b5dd7c919a43692e7150f5cd0",
+        "!doc_type": "item",
+        "name": "Brühe",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "c7890f12-4c9e-46fc-93a5-98315c6d07f5",
+        "_rev": "2-61db5d7ecb3c535cdb877d023c7ec8a3",
+        "!doc_type": "item",
+        "name": "Weißbrot",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "c79cabad-3157-4f81-a64e-8f780a035d1f",
+        "_rev": "2-8ee5759ed043fb9cf8e6dbf504b127ba",
+        "!doc_type": "item",
+        "name": "Romanssalat ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "c840a7cd-1ad9-4e2b-8699-0ac7aec90517",
+        "_rev": "2-1dbaa9952ff8437acfcdd7ddec18a559",
+        "!doc_type": "item",
+        "name": "Swiffer Blätter",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "c89efdc0-5f70-4924-af00-50335c9643b4",
+        "_rev": "16-574e5761c8e864c6898b85cde5b433c8",
+        "!doc_type": "item",
+        "name": "TK Gemüse ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "ca048571-ba39-48d7-89d0-d06dfb834f78",
+        "_rev": "9-573837cf52ebbfaa5a08f7a36f44c223",
+        "!doc_type": "item",
+        "name": "Müllbeutel 10l",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "categorie_back_teig",
+        "_rev": "1-bda68871fa8377b6c3a9c1e246a66bc9",
+        "!doc_type": "category",
+        "name": "Back & Teig",
+        "sorthint": 20
+    },
+    {
+        "_id": "categorie_kühl",
+        "_rev": "1-c4f2491c083cdcd22cf517c0d346a6d3",
+        "!doc_type": "category",
+        "name": "Kühl",
+        "sorthint": 40
+    },
+    {
+        "_id": "categorie_obst_gemüse",
+        "_rev": "1-78e9c458a14a955de3ec0304f86d9946",
+        "!doc_type": "category",
+        "name": "Obst & Gemüse",
+        "sorthint": 10
+    },
+    {
+        "_id": "categorie_sonstiges",
+        "_rev": "1-2a49ed8e6f3c4def5d69cb3306b327f2",
+        "!doc_type": "category",
+        "name": "Sonstiges",
+        "sorthint": 50
+    },
+    {
+        "_id": "categorie_wurst_käse",
+        "_rev": "1-f51afbd6216604001b20d4661b7dcfd8",
+        "!doc_type": "category",
+        "name": "Wurst & Käse",
+        "sorthint": 30
+    },
+    {
+        "_id": "cb2baac0-d24a-4a93-8e8c-b0ec76134ca0",
+        "_rev": "2-69258111ea4c96fe6e87d7ecd2bee9f0",
+        "!doc_type": "item",
+        "name": "Eiskonfekt",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "cce4aa43-5a9d-4ef0-bd60-6917330a59ee",
+        "_rev": "4-9398f57d0e72842d1aeef1b9ac8d089e",
+        "!doc_type": "item",
+        "name": "Baguette",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "cd4790d2-59a9-4929-adcd-fd50ad3be876",
+        "_rev": "67-4fcc23b7d29e0639aee24bf44432f3d4",
+        "!doc_type": "item",
+        "name": "Geramont ",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "cd7396c5-0da9-40b9-8b20-9c734b999658",
+        "_rev": "3-100105820946305d804700bd8d7a2222",
+        "!doc_type": "item",
+        "name": "Reis",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "ce0af2b7-3a14-4321-874d-d0f6a7058b25",
+        "_rev": "50-2e3f2636aed743034953bf3d5d70cd0a",
+        "!doc_type": "item",
+        "name": "Quark",
+        "erledigt": false,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "cf003989-9088-497a-a9a7-06768badb8ad",
+        "_rev": "36-02516c41d673bec9610ac9b54478b955",
+        "!doc_type": "item",
+        "name": "Kakao",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "d101f5e8-4c2c-40ee-a13f-68da7682f09c",
+        "_rev": "48-bee5777e00ee08896440ee0820b9f83c",
+        "!doc_type": "item",
+        "name": "Möhren",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "d3678e52-8c3c-44ce-9b31-14a9d19eac3d",
+        "_rev": "2-677c10d52a2fa66892591c7b587bd88a",
+        "!doc_type": "item",
+        "name": "Trocken Shampoo ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "d396558f-0aa7-402d-acca-c42385c1d6e3",
+        "_rev": "8-b84b0b212055743a60651c118edb9c2e",
+        "!doc_type": "item",
+        "name": "Mottenschutz kleidung",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "d3f941cf-d9b4-45ab-991a-c9b1c1a55d15",
+        "_rev": "2-2d3122706021a82429fc4b6f6ae84267",
+        "!doc_type": "item",
+        "name": "Mondamin Soßenbinder",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "d506587e-19bb-4522-85d7-92ec4e33191c",
+        "_rev": "109-afca45595ded17c91b887bde9aeba401",
+        "!doc_type": "item",
+        "name": "Tomaten",
+        "erledigt": true,
+        "anzahl": "5",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "d646ccd1-aef5-4406-a4d2-f8daf4f2b848",
+        "_rev": "6-be426fba4c586edf8a4f93266411d279",
+        "!doc_type": "item",
+        "name": "Küchenrolle",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "d6cb44c0-57dc-40b5-8ae2-86d9d77602f4",
+        "_rev": "6-a1a93e2757d77f343c43bf424132603c",
+        "!doc_type": "item",
+        "name": "Fleischsalat",
+        "erledigt": true,
+        "anzahl": "100",
+        "einheit": "g",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "d98a9b4e-a061-45f4-88b2-413034694ca8",
+        "_rev": "22-7b1a9297654bdfb7512667589fa1147a",
+        "!doc_type": "item",
+        "name": "Sahne",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "d98d7dd6-a46e-46a1-b926-d31deab81bde",
+        "_rev": "4-a198ef50b280df7f3e367dced1347c91",
+        "!doc_type": "item",
+        "name": "Volvic",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "db28b994-3874-43bc-bf43-52f7bd7f1a61",
+        "_rev": "6-929121d3fe2c87a79b204e40d2dd2a89",
+        "!doc_type": "item",
+        "name": "Vanillepudding Pulver ",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "dbmigrations",
+        "_rev": "2-9576974ac0ba7fb0d30f4a47decc6863",
+        "!doc_type": "dbmigrations",
+        "version": 2
+    },
+    {
+        "_id": "dd14f141-e3a2-407b-8e5b-d26e613527f9",
+        "_rev": "2-4110e5e39a9dd3c72b16aa191534e273",
+        "!doc_type": "item",
+        "name": "Handcreme Tobi",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "de79bd4f-13bb-4c3e-b273-921154df59af",
+        "_rev": "4-af398c931626a25432f540986dbfefa0",
+        "!doc_type": "item",
+        "name": "Vanilleeis",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "deeb4ae6-650c-4085-bff8-882ebe5a4cb9",
+        "_rev": "4-0fdc11f3c882c60f4b8d87a5a025b34e",
+        "!doc_type": "item",
+        "name": "Müllbeutel 25l",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "df7758d4-19d7-47f6-b2e4-b365bcaacca5",
+        "_rev": "15-aa0290439661959fa4e8e1e2374ce92c",
+        "!doc_type": "item",
+        "name": "Colorwaschmittel",
+        "erledigt": false,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "e058c44a-fbe7-4695-84c1-44f234028ac4",
+        "_rev": "8-d0844b63364edabd83e8bfde20e82335",
+        "!doc_type": "item",
+        "name": "Brokkoli",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "e144afc9-947f-466f-9b01-14975159e7ed",
+        "_rev": "26-b55f765b18dbccda12601739f61e6631",
+        "!doc_type": "item",
+        "name": "Fertigspaghetti",
+        "erledigt": true,
+        "anzahl": 3,
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "e44fe88c-f6e8-454b-955d-2a51f2995c2a",
+        "_rev": "114-7540bb100ce2ee46eca4fd811f5c7f87",
+        "!doc_type": "item",
+        "name": "Apfel Kanzi",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "e4a52324-b6fc-4b3a-b2f7-22eaa01d5aa2",
+        "_rev": "50-9fbc1248369a9b5ece1af318717438e2",
+        "!doc_type": "item",
+        "name": "Tomatenpampe stückig",
+        "erledigt": true,
+        "anzahl": "12",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "e9749f00-927c-4a7a-9d26-99e783a40ded",
+        "_rev": "2-d6fa11833ca46810cea1cd3562dd1141",
+        "!doc_type": "item",
+        "name": "Vanillesoße",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "e9aaebc1-5c6f-421a-ad1a-f3bbab4701f0",
+        "_rev": "10-f921db3728d9c17b9d06d8e5e88914ed",
+        "!doc_type": "item",
+        "name": "Blätterteig ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "e9b39c66-b55c-4cad-a31f-303ff9fd33f5",
+        "_rev": "2-7654b83e61eac0ba1fc9b8d38768adf2",
+        "!doc_type": "item",
+        "name": "Rote zwiebel",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "ea072ddd-80e8-4863-b582-c802cc8eb4ae",
+        "_rev": "8-45a50a945086d20091480b7e7f4f5a39",
+        "!doc_type": "item",
+        "name": "Kohlrabi",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "ea90fbf6-fc8a-4d14-a844-2e770527384b",
+        "_rev": "2-d76398b7d33c184b73fd389e97543a1e",
+        "!doc_type": "item",
+        "name": "Kürbissaat",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "ed4156a7-68b5-452f-b34e-636d63cbd5ba",
+        "_rev": "2-cbf39b3c6d27256a1a704a09d1092c51",
+        "!doc_type": "item",
+        "name": "Geschirrspülersalz",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "ef9a9fef-f4fe-4694-aa0b-f11f5cd6e4c6",
+        "_rev": "37-a53016be50e7637d3a3d7237442626fa",
+        "!doc_type": "item",
+        "name": "Olivenöl",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges",
+        "anzahl": 1
+    },
+    {
+        "_id": "f0cb42ad-d710-42ee-b375-361a954b9c26",
+        "_rev": "32-72bc626a57bea0ba3f86c41fec39a70d",
+        "!doc_type": "item",
+        "name": "Granatapfel",
+        "erledigt": true,
+        "anzahl": 1,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "f0d57850-acef-4e6c-bb42-b02488b8c892",
+        "_rev": "4-c5ba1403247a3e5a4b9b7ec7624f1bf3",
+        "!doc_type": "item",
+        "name": "Heidelbeeren",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "f24d08b9-8ed3-4bd8-9634-1f643dab3267",
+        "_rev": "22-6c43d4d8c0fe48baea516ca15e0402bc",
+        "!doc_type": "item",
+        "name": "Knoblauch",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "f25a0117-c34f-4650-b95f-e2dff114a144",
+        "_rev": "2-1bf069bf66b7ee362ec33cd803a27ef4",
+        "!doc_type": "item",
+        "name": "Topfschwamm",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "f27b8b70-b89e-4cac-83b9-578409282a6c",
+        "_rev": "8-9c931142415f14d649872124f2f3031c",
+        "!doc_type": "item",
+        "name": "Sellerie",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "f4721225-8366-4bad-9c09-541c539f339a",
+        "_rev": "2-41f4503cc9ba1b542f42b20ac07ce252",
+        "!doc_type": "item",
+        "name": "Pfirsich ",
+        "erledigt": true,
+        "anzahl": "5",
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "f57f9c09-94b8-4db4-bef4-844571486fd8",
+        "_rev": "2-8c4c1b12ee66c1a12b885a7a9b15ae19",
+        "!doc_type": "item",
+        "name": "Vanillesoße zum kochen ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_back_teig"
+    },
+    {
+        "_id": "f59eeee4-8522-4db9-849f-15ef6b426b8b",
+        "_rev": "84-80c925188d65e01e10f66560d171eb19",
+        "!doc_type": "item",
+        "name": "Weichkäse",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_wurst_käse"
+    },
+    {
+        "_id": "f61ef8be-c1d1-4ac3-87db-e39e60ed360b",
+        "_rev": "6-ad3c8325a8985387d1c7ccc4c315746a",
+        "!doc_type": "item",
+        "name": "Krankentee (ohne Einzeltüten)",
+        "erledigt": true,
+        "einheit": "",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "f80af4ca-5551-4305-9ad3-dbfe9ae39f77",
+        "_rev": "2-4dd1589a03c9a77b00d89e1b5d92ce86",
+        "!doc_type": "item",
+        "name": "Waschmittel wolle & feines",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "f9e010c7-1faa-457c-85f7-55ecf73ff1db",
+        "_rev": "26-97da32f3ed7b9058440910e72241569f",
+        "!doc_type": "item",
+        "name": "Zitrone",
+        "erledigt": true,
+        "anzahl": 2,
+        "einheit": "Stück",
+        "category": "categorie_obst_gemüse"
+    },
+    {
+        "_id": "fcde7947-cdf2-422c-ae8f-523e11dc6409",
+        "_rev": "74-9536e5c0fefae839f4a10a6ffa6d97a0",
+        "!doc_type": "item",
+        "name": "Butter",
+        "erledigt": true,
+        "anzahl": null,
+        "einheit": "Stück",
+        "category": "categorie_kühl"
+    },
+    {
+        "_id": "fe065a72-efe1-4330-a142-b3990a1155e3",
+        "_rev": "4-9ef0affb9f92a5f8735b0921edc5c414",
+        "!doc_type": "item",
+        "name": "Blumenerde ",
+        "erledigt": true,
+        "anzahl": "1",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    },
+    {
+        "_id": "fea0139b-0c25-4ec6-b693-48007d689ce9",
+        "_rev": "2-81f674dff2e189189788f3dcf1ff215b",
+        "!doc_type": "item",
+        "name": "Nasenspray ",
+        "erledigt": true,
+        "anzahl": "2",
+        "einheit": "Stück",
+        "category": "categorie_sonstiges"
+    }
+]
