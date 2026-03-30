@@ -1,6 +1,6 @@
 name: dart_couch
 description: "A Dart binding for CouchDB with offline first capabilities, with ideas from PouchDB which I loved very much in the JS world."
-version: 0.9.14+1
+version: 0.9.16+1
 homepage:
 
 environment:

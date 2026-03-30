@@ -1,3 +1,6 @@
+## 0.9.16
+* bugfix: don't rethrow in HttpServer.login
+
 ## 0.9.14
 * regenerate dart_mappable code
 

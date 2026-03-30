@@ -237,12 +237,13 @@ class HttpDartCouchServer extends DartCouchServer with HttpMethods {
       this.password = null;
       return null;
     } catch (e) {
-      _log.severe(e);
+      _log.severe('Login failed due to unexpected error: $e');
       lastLoginResult = null;
-      connectionState.value = DartCouchConnectionState.disconnected;
+      connectionState.value =
+          DartCouchConnectionState.loginFailedWithNetworkError;
       this.username = null;
       this.password = null;
-      rethrow;
+      return null;
     }
   }
 

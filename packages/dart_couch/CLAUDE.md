@@ -378,5 +378,19 @@ This is a monorepo with two packages:
 
 The core package uses `DcValueNotifier` / `DcValueListenable` (in `lib/src/value_notifier.dart`) as pure-Dart replacements for Flutter's `ValueNotifier` / `ValueListenable`. The widget package provides `DcValueListenableBuilder` to bridge these into Flutter's widget tree.
 
+## Open Issues
+
+### Sporadic Blank Screen on App Startup (2026-03-30)
+
+**Symptom:** The example app occasionally shows a completely blank grey screen on startup (no AppBar, no spinner, no progress bar). Possibly related to network quality (poor, broken, or DNS issues). Reported on Android.
+
+**Partial fix applied:** `HttpDartCouchServer.login()` had a generic `catch (e)` that rethrew unexpected exceptions (e.g. `HandshakeException`, `FormatException` from truncated responses). This left `OfflineFirstServer` stuck in `tryingToConnect` state permanently. Fixed by returning `null` (network error) instead of rethrowing, matching the `ClientException` and `TimeoutException` handlers.
+
+**If the problem recurs:** The completely blank screen (not even a spinner) suggests an unhandled exception during `build()` in release mode (Flutter's ErrorWidget renders as `SizedBox.shrink()` in release). The investigation did not definitively identify which build path throws. Next step: add **file logging** to the example app (write logs to a file on disk instead of just `print`) so that when the blank screen appears, the log file can be analyzed to see the exact state transitions, exceptions, and widget lifecycle events. Key areas to instrument:
+- `DbStateProxyWidget._handleLogin()` — log before/after each step, especially the `onLogin` callback
+- `OfflineFirstServer.loginWithReloginFlag()` — log state transitions and exception details
+- `ReplicationStateProxyWidget._loadAndSetupDatabases()` — log whether databases were found
+- `MyHomePage.build()` — log whether `di<OfflineFirstDb>()` succeeds
+
 ## CouchDB Protocol Compliance
 Follow CouchDB's replication protocol - it doesn't use heuristics, neither should we.
