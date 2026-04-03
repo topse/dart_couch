@@ -199,6 +199,36 @@ class HttpDartCouchServer extends DartCouchServer with HttpMethods {
 
         return lastLoginResult!;
       } else {
+        // Verify the response is actually from CouchDB, not from an
+        // intermediary proxy (e.g. Synology reverse proxy returning an HTML
+        // "page not found" page). CouchDB error responses are always JSON
+        // with an "error" key: {"error":"unauthorized","reason":"..."}
+        // This mirrors the check in isCouchDbUp().
+        bool isCouchDbResponse;
+        try {
+          final body = convert.jsonDecode(response.body);
+          isCouchDbResponse = body is Map && body.containsKey('error');
+        } catch (_) {
+          isCouchDbResponse = false;
+        }
+
+        if (!isCouchDbResponse) {
+          _log.warning(
+            'Login failed for $username: response is not a CouchDB error '
+            '(status ${response.statusCode}) — '
+            'treating as network error (proxy/routing issue)',
+          );
+          _log.fine(
+            'AuthCookie: NULL, Connection state: loginFailedWithNetworkError',
+          );
+          connectionState.value =
+              DartCouchConnectionState.loginFailedWithNetworkError;
+          lastLoginResult = null;
+          this.username = null;
+          this.password = null;
+          return null;
+        }
+
         _log.warning('Login failed for $username: ${response.body}');
         _log.fine('AuthCookie: NULL, Connection state: wrongCredentials');
         lastLoginResult = LoginResult(

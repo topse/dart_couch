@@ -10,6 +10,7 @@ import 'package:path/path.dart' as p;
 
 import 'category_dropdown.dart';
 import 'current_category_provider.dart';
+import 'file_logger.dart';
 import 'package:path_provider/path_provider.dart';
 import 'package:logging/logging.dart';
 import 'package:shared_preferences/shared_preferences.dart';
@@ -20,23 +21,33 @@ import 'einkaufsliste_migration.dart';
 import 'new_item_dialog.dart';
 import 'item_list.dart';
 
+/// Set to true to write all log output to a file in the Downloads folder.
+const bool _enableFileLogging = false;
+
 void main() async {
   WidgetsFlutterBinding.ensureInitialized();
   DartCouchDb.ensureInitialized();
   EinkaufslistItemMapper.ensureInitialized();
   EinkaufslistCategoryMapper.ensureInitialized();
 
+  if (_enableFileLogging) {
+    await FileLogger.init();
+  }
+
   Logger.root.level = Level.FINEST; // defaults to Level.INFO
   Logger.root.onRecord.listen((record) {
     LineSplitter ls = LineSplitter();
     for (final line in ls.convert(record.message)) {
+      final formatted =
+          '${record.loggerName} ${record.level.name}: ${record.time}: $line';
       // Schedule the logging asynchronously to avoid re-entrancy issues
       scheduleMicrotask(() {
         // ignore: avoid_print
-        print(
-          '${record.loggerName} ${record.level.name}: ${record.time}: $line',
-        );
+        print(formatted);
       });
+      if (_enableFileLogging) {
+        FileLogger.writeln(formatted);
+      }
     }
   });
 

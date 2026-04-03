@@ -1,6 +1,4 @@
 #!/usr/bin/env bash
-# git remote add github git@github.com:topse/dart_couch.git
-#!/usr/bin/env bash
 # ─────────────────────────────────────────────────────────────────────
 # publish-to-github.sh
 #
@@ -59,6 +57,16 @@ readonly SOURCE_TREE=$(git rev-parse "${TAG}^{tree}")
 readonly SOURCE_MSG=$(git log -1 --format='%B' "${SOURCE_COMMIT}")
 
 # ── Ensure the release branch exists ────────────────────────────────
+
+if ! git show-ref --verify --quiet "refs/heads/${RELEASE_BRANCH}"; then
+    # Local branch missing — fetch remote to see if it already has history
+    echo "Local '${RELEASE_BRANCH}' branch not found, fetching from '${REMOTE}'..."
+    git fetch "${REMOTE}" main 2>/dev/null || true
+    if git show-ref --verify --quiet "refs/remotes/${REMOTE}/main"; then
+        echo "Rebuilding '${RELEASE_BRANCH}' from ${REMOTE}/main..."
+        git update-ref "refs/heads/${RELEASE_BRANCH}" "$(git rev-parse ${REMOTE}/main)"
+    fi
+fi
 
 if git show-ref --verify --quiet "refs/heads/${RELEASE_BRANCH}"; then
     readonly PARENT_COMMIT=$(git rev-parse "${RELEASE_BRANCH}")

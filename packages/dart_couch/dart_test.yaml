@@ -1,2 +1,2 @@
 # On some machines the tests run longer than expected
-timeout: 4x
+timeout: 6x

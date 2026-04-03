@@ -243,12 +243,12 @@ mixin HealthMonitoring {
       _healthLog.warning('_attemptRelogin(): unauthorized (wrong credentials)');
       state.value = .errorWrongCredentials;
     } else {
-      // Server error but credentials might still be valid
+      // Server error but credentials might still be valid — stay offline
+      // and let health monitoring keep retrying
       _healthLog.warning(
-        '_attemptRelogin(): login failed with statusCode=${loginRes.statusCode}, setting normalOnline',
+        '_attemptRelogin(): login failed with statusCode=${loginRes.statusCode}, staying normalOffline',
       );
-      state.value =
-          .normalOnline; // maybe normalTryingToConnect? Then our GUI may change to CircularProgressBar?
+      state.value = .normalOffline;
     }
   }
 }

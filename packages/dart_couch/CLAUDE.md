@@ -380,17 +380,22 @@ The core package uses `DcValueNotifier` / `DcValueListenable` (in `lib/src/value
 
 ## Open Issues
 
-### Sporadic Blank Screen on App Startup (2026-03-30)
+### Sporadic Blank Screen on App Startup (2026-03-30, fixed 2026-04-02)
 
-**Symptom:** The example app occasionally shows a completely blank grey screen on startup (no AppBar, no spinner, no progress bar). Possibly related to network quality (poor, broken, or DNS issues). Reported on Android.
+**Symptom:** The example app occasionally shows a completely blank grey screen on startup (no AppBar, no spinner, no progress bar). Reported on Android under poor network conditions.
 
-**Partial fix applied:** `HttpDartCouchServer.login()` had a generic `catch (e)` that rethrew unexpected exceptions (e.g. `HandshakeException`, `FormatException` from truncated responses). This left `OfflineFirstServer` stuck in `tryingToConnect` state permanently. Fixed by returning `null` (network error) instead of rethrowing, matching the `ClientException` and `TimeoutException` handlers.
+**First partial fix (2026-03-30):** `HttpDartCouchServer.login()` had a generic `catch (e)` that rethrew unexpected exceptions (e.g. `HandshakeException`, `FormatException` from truncated responses). This left `OfflineFirstServer` stuck in `tryingToConnect` state permanently. Fixed by returning `null` (network error) instead of rethrowing, matching the `ClientException` and `TimeoutException` handlers.
 
-**If the problem recurs:** The completely blank screen (not even a spinner) suggests an unhandled exception during `build()` in release mode (Flutter's ErrorWidget renders as `SizedBox.shrink()` in release). The investigation did not definitively identify which build path throws. Next step: add **file logging** to the example app (write logs to a file on disk instead of just `print`) so that when the blank screen appears, the log file can be analyzed to see the exact state transitions, exceptions, and widget lifecycle events. Key areas to instrument:
-- `DbStateProxyWidget._handleLogin()` — log before/after each step, especially the `onLogin` callback
-- `OfflineFirstServer.loginWithReloginFlag()` — log state transitions and exception details
-- `ReplicationStateProxyWidget._loadAndSetupDatabases()` — log whether databases were found
-- `MyHomePage.build()` — log whether `di<OfflineFirstDb>()` succeeds
+**Root cause identified (2026-04-02):** When a reverse proxy (e.g. Synology NAS) intercepts the `/_session` request and returns an HTML error page (non-200 status, HTML body), `HttpDartCouchServer.login()` treated this as `wrongCredentials` instead of a network error. The causal chain:
+1. Proxy returns HTML "page not found" page instead of CouchDB JSON
+2. `login()` returns `LoginResult(success: false)` (wrongCredentials)
+3. `OfflineFirstServer.loginWithReloginFlag()` correctly goes to `normalOffline` (cached credentials exist) but returns `success: false`
+4. `DbStateProxyWidget._handleLogin()` sees `success: false` and skips the `onLogin` callback
+5. `onLogin` is where the example app registers `di.registerSingleton<OfflineFirstDb>(db)`
+6. `MyHomePage.build()` calls `di<OfflineFirstDb>()` which throws (not registered)
+7. In release mode, `ErrorWidget` renders as `SizedBox.shrink()` — grey screen
+
+**Fix:** `http_dart_couch_server.dart:login()` now detects non-JSON responses (checks `content-type` header and whether body starts with `{`) and treats them as network errors (`loginFailedWithNetworkError`, returns `null`) instead of wrong credentials. This way, `OfflineFirstServer.loginWithReloginFlag()` takes the `res == null` path and returns `LoginResult(success: true)` when cached credentials exist, ensuring the `onLogin` callback fires.
 
 ## CouchDB Protocol Compliance
 Follow CouchDB's replication protocol - it doesn't use heuristics, neither should we.

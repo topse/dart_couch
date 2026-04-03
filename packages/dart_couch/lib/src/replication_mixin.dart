@@ -1222,6 +1222,12 @@ class _CouchReplicationController implements ReplicationController {
                 }
               }
 
+              // If replication was stopped while we were mid-stream (e.g.
+              // setDelegate called stop() during recovery), do NOT advance the
+              // checkpoint. The doc(s) we fetched but didn't write will be
+              // re-processed by the next replication from the old checkpoint.
+              if (_stopped) return;
+
               // Extract sequence number before attempting replication
               final seq = changeJson['seq'] as String?;
 

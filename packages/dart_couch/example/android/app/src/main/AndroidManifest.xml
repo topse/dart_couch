@@ -1,9 +1,18 @@
 <manifest xmlns:android="http://schemas.android.com/apk/res/android">
     <uses-permission android:name="android.permission.INTERNET" />
+    <!-- Needed to write log files to the Downloads folder.
+         WRITE_EXTERNAL_STORAGE: grants access on Android 10 and below.
+         MANAGE_EXTERNAL_STORAGE: grants access on Android 11+. The user
+         must manually enable "All files access" for this app in
+         Settings > Apps > Einkaufsliste > Permissions > Files. -->
+    <uses-permission android:name="android.permission.WRITE_EXTERNAL_STORAGE"
+        android:maxSdkVersion="29" />
+    <uses-permission android:name="android.permission.MANAGE_EXTERNAL_STORAGE" />
     <application
         android:label="Einkaufsliste"
         android:name="${applicationName}"
-        android:icon="@mipmap/launcher_icon">
+        android:icon="@mipmap/launcher_icon"
+        android:requestLegacyExternalStorage="true">
         <activity
             android:name=".MainActivity"
             android:exported="true"
