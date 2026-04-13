@@ -1,3 +1,6 @@
+## 0.9.22
+* bugfix: not all documents written to offline were replicated if initial replication was in progress
+
 ## 0.9.20
 * bugfix for grey screen in example app: If can connect to server but not couchdb answers but some proxy with a 404, this was a problem until now
 

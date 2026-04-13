@@ -226,7 +226,7 @@ mixin HttpMethods {
 
     final sw = Stopwatch()..start();
     _log.fine(
-      'PUT $uri: sending request (${body is String ? body.length : 0} bytes)',
+      'PUT $uri: sending request (${body is String ? body.length : body is List<int> ? body.length : 0} bytes)',
     );
     final streamedResponse = await _httpClient.send(request);
     _log.fine(

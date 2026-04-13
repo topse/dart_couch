@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
@@ -99,6 +100,62 @@ void main() {
         expect((doc as EinkaufslistItem).anzahl, i + 1);
       }
     });
+
+    test(
+      'local write during initial pull sync gets pushed to remote',
+      () async {
+        // Create documents on the server BEFORE creating OfflineFirstDb
+        final serverDb = await cm.httpDb();
+        for (int i = 0; i < 10; i++) {
+          final doc = EinkaufslistItem(
+            id: 'server_doc_$i',
+            name: 'Server Doc $i',
+            erledigt: false,
+            anzahl: i + 1,
+            einheit: 'pc',
+            category: 'initial',
+          );
+          await serverDb.put(doc);
+        }
+
+        // Create OfflineFirstDb — this starts initial sync (pull from remote)
+        final db = await cm.offlineDb();
+
+        // Wait until initial sync has started pulling
+        await waitForCondition(() async {
+          final state = db.replicationController.progress.value.state;
+          return state == ReplicationState.initialSyncInProgress;
+        });
+
+        // Write a document locally DURING the initial pull sync.
+        // This simulates the app writing a device-identity doc while
+        // pull replication is still in progress.
+        final localDoc = EinkaufslistItem(
+          id: 'local_during_sync',
+          name: 'Written During Sync',
+          erledigt: false,
+          anzahl: 99,
+          einheit: 'pc',
+          category: 'local_write',
+        );
+        await db.put(localDoc);
+
+        // Wait for sync to complete
+        await waitForSync(db, maxSeconds: 15);
+
+        // Verify the locally-written document was pushed to the server
+        final remoteDoc = await serverDb.get('local_during_sync');
+        expect(
+          remoteDoc,
+          isNotNull,
+          reason:
+              'Document written locally during initial pull sync '
+              'must be pushed to remote',
+        );
+        expect((remoteDoc as EinkaufslistItem).name, 'Written During Sync');
+        expect(remoteDoc.anzahl, 99);
+      },
+    );
 
     test(
       'reads come from local db even when online (fast local reads)',
@@ -1479,6 +1536,230 @@ void main() {
         isTrue,
       );
     });
+
+    test(
+      'remote documents deleted while initial replication is running still settle to inSync and produce tombstones',
+      () async {
+        // This test reproduces the scenario behind the "ReplicationProxy state
+        // widget never exits" bug: 10 documents with very large attachments
+        // exist on remote, OfflineFirstDb starts initial replication, and
+        // partway through the last 5 source documents are deleted on remote.
+        //
+        // What we are validating in the core:
+        //  1. Replication eventually reaches inSync — it must not get stuck
+        //     because some queued docs vanished from the source mid-flight.
+        //  2. The 5 surviving documents are present locally with their
+        //     attachments intact.
+        //  3. The 5 deleted documents are tombstoned locally — get() returns
+        //     null but the local changes feed reports them as deleted, proving
+        //     the deletion was actually replicated rather than silently lost.
+
+        const int totalLargeDocs = 10;
+        const int totalSmallDocs = 50;
+        const int attachmentSize = 30 * 1024 * 1024; // 30 MB per attachment
+        const String largeIdPrefix = 'big_attach_during_repl_';
+        const String smallIdPrefix = 'small_during_repl_';
+
+        // Use application/octet-stream so CouchDB does NOT gzip the attachment
+        // (compressible_types only matches text/json/xml/javascript). This
+        // keeps the actual transferred size at ~30 MB per doc, which is what
+        // makes the replication slow enough for mid-sync deletes to race.
+        final remoteDb = await cm.httpDb();
+
+        // --- Large docs: 10 x 30 MB attachment each ---
+        // Each large doc exceeds the 1 MB adaptive-group target, so every large
+        // doc gets its own _bulk_get request (1 doc per HTTP round-trip).
+        // The two replication pipelines process groups 0..9 in pairs, taking
+        // roughly 2.5 seconds total.
+        final largeDocIds = <String>[];
+        final attachmentBytes = Uint8List(attachmentSize);
+        for (int i = 0; i < totalLargeDocs; i++) {
+          final id = '$largeIdPrefix$i';
+          largeDocIds.add(id);
+          final putResult = await remoteDb.put(
+            EinkaufslistItem(
+              id: id,
+              name: 'Big Item $i',
+              erledigt: false,
+              anzahl: i + 1,
+              einheit: 'pc',
+              category: 'big',
+            ),
+          );
+          await remoteDb.saveAttachment(
+            id,
+            putResult.rev!,
+            'blob.bin',
+            attachmentBytes,
+            contentType: 'application/octet-stream',
+          );
+        }
+
+        // --- Small docs: 50 x ~1 KB (no attachment) ---
+        // All 50 fit inside the 1 MB / 50-doc adaptive-group cap → they form a
+        // single _bulk_get group (#10). That group is only dispatched after both
+        // pipelines have exhausted the 10 large-doc groups (~2.5 s), so the
+        // deletes we fire at t≈500 ms land ~2 seconds before this bulk fires.
+        final smallDocIds = <String>[];
+        final smallDocRevs = <String>[];
+        for (int i = 0; i < totalSmallDocs; i++) {
+          final id = '$smallIdPrefix$i';
+          smallDocIds.add(id);
+          final putResult = await remoteDb.put(
+            EinkaufslistItem(
+              id: id,
+              name: 'Small Item $i',
+              erledigt: false,
+              anzahl: i + 1,
+              einheit: 'pc',
+              category: 'small',
+            ),
+          );
+          smallDocRevs.add(putResult.rev!);
+        }
+
+        // Use a Completer so we react the instant the first large doc is written
+        // locally (transferredDocs >= 1). At that point the two replication
+        // pipelines are still busy with the remaining large-doc groups and the
+        // small-doc group (#10) has not been dispatched yet. The 50 small-doc
+        // deletes land ~2 seconds before group #10's _bulk_get fires.
+        final deleteTrigger = Completer<void>();
+
+        // Record every progress emission so we can diagnose stuck replication.
+        final progressSnapshots = <ReplicationProgress>[];
+        final db = await cm.offlineDb();
+        void progressListener() {
+          final p = db.replicationController.progress.value;
+          progressSnapshots.add(p);
+          log.fine('progress emission: $p');
+          if (!deleteTrigger.isCompleted && p.transferredDocs >= 1) {
+            deleteTrigger.complete();
+          }
+        }
+
+        db.replicationController.progress.addListener(progressListener);
+
+        try {
+          // Wait until the first large doc has been written locally — the two
+          // pipelines are mid-flight on the large-doc groups at this point and
+          // the 50-doc small-doc group has not been requested yet.
+          await deleteTrigger.future.timeout(
+            const Duration(seconds: 60),
+            onTimeout: () {
+              throw StateError(
+                'No document was transferred within 60 s — '
+                'progress=${db.replicationController.progress.value}',
+              );
+            },
+          );
+
+          log.info(
+            'First large doc replicated. Deleting all $totalSmallDocs small '
+            'docs on remote before their _bulk_get group fires. '
+            'Progress: ${db.replicationController.progress.value}',
+          );
+
+          // Delete all 50 small docs in parallel. They form a single _bulk_get
+          // group (#10) that is dispatched only after both pipelines exhaust the
+          // 10 large-doc groups (~2.5 s from now), so these deletes arrive on
+          // CouchDB well before that request goes out.
+          await Future.wait([
+            for (int i = 0; i < totalSmallDocs; i++)
+              remoteDb.remove(smallDocIds[i], smallDocRevs[i]),
+          ]);
+
+          log.info(
+            'Deleted $totalSmallDocs small docs on remote, '
+            'waiting for replication to settle',
+          );
+
+          await waitForSync(db, maxSeconds: 180);
+        } finally {
+          db.replicationController.progress.removeListener(progressListener);
+        }
+
+        final finalProgress = db.replicationController.progress.value;
+        log.info(
+          'Final replication progress: $finalProgress '
+          '(${progressSnapshots.length} progress emissions observed)',
+        );
+        expect(
+          finalProgress.state,
+          anyOf(ReplicationState.inSync, ReplicationState.initialSyncComplete),
+          reason:
+              'Replication must reach a settled state, even when source docs '
+              'were deleted while their bulk_get group was still pending',
+        );
+        expect(
+          finalProgress.targetReachable,
+          isTrue,
+          reason: 'Target should still be reachable at the end of the test',
+        );
+
+        // All 10 large docs must be present locally with their attachment stubs.
+        for (int i = 0; i < totalLargeDocs; i++) {
+          final localDoc = await db.localDb.get(largeDocIds[i]);
+          expect(
+            localDoc,
+            isNotNull,
+            reason: 'Large document ${largeDocIds[i]} should exist locally',
+          );
+          expect((localDoc as EinkaufslistItem).name, 'Big Item $i');
+          expect(
+            localDoc.attachments,
+            isNotNull,
+            reason:
+                '${largeDocIds[i]} should still have its attachment metadata',
+          );
+          expect(localDoc.attachments!.containsKey('blob.bin'), isTrue);
+          expect(
+            localDoc.attachments!['blob.bin']!.length,
+            equals(attachmentSize),
+            reason:
+                '${largeDocIds[i]} attachment length should match the original',
+          );
+        }
+
+        // All 50 small docs were deleted on remote before their _bulk_get group
+        // fired. They must not be readable via get() locally …
+        for (int i = 0; i < totalSmallDocs; i++) {
+          final localDoc = await db.localDb.get(smallDocIds[i]);
+          expect(
+            localDoc,
+            isNull,
+            reason:
+                'Small document ${smallDocIds[i]} was deleted on remote and '
+                'must not be readable locally anymore',
+          );
+        }
+
+        // … and must appear as tombstones in the local changes feed, proving
+        // the deletion was replicated rather than silently dropped.
+        final changes = await db.localDb
+            .changes(feedmode: FeedMode.normal)
+            .first;
+        final results = changes.normal!.results;
+        for (int i = 0; i < totalSmallDocs; i++) {
+          final entries =
+              results.where((r) => r.id == smallDocIds[i]).toList();
+          expect(
+            entries,
+            hasLength(1),
+            reason:
+                'Local changes feed should contain a tombstone entry for '
+                '${smallDocIds[i]}',
+          );
+          expect(
+            entries.first.deleted,
+            isTrue,
+            reason:
+                '${smallDocIds[i]} should be reported as deleted in the local '
+                'changes feed',
+          );
+        }
+      },
+      timeout: const Timeout(Duration(minutes: 5)),
+    );
   });
 
   group('OfflineFirstDb - Views and Queries', () {

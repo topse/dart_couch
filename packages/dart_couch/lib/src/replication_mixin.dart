@@ -363,19 +363,24 @@ class _CouchReplicationController implements ReplicationController {
         }
 
         // After pull one-shot populated the local DB with remote docs,
-        // update _sourceSeq to the current local sequence so push
-        // continuous doesn't re-process all just-pulled docs through
-        // revsDiff (which would all return "nothing to write").
-        if (direction == ReplicationDirection.both) {
-          final sourceInfo = await source.info();
-          if (sourceInfo != null) {
-            final currentSourceSeq = sourceInfo.updateSeq;
-            _repLog.fine(
-              'Updating _sourceSeq from $_sourceSeq to $currentSourceSeq '
-              'after pull one-shot populated local DB',
-            );
-            _sourceSeq = currentSourceSeq;
-          }
+        // run a second push one-shot to catch any documents written
+        // locally *during* the pull (e.g. device-identity docs).
+        // This also advances _sourceSeq past the pulled docs so push
+        // continuous doesn't re-process them.  The cost is one revsDiff
+        // call — docs that came from remote will show as "not missing"
+        // and no data is transferred for them.
+        if (direction == ReplicationDirection.both && !_stopped) {
+          _repLog.fine(
+            'Running post-pull push one-shot from $_sourceSeq '
+            'to catch locally-written docs',
+          );
+          final lastSeq = await _replicateOnce(
+            source,
+            target,
+            sinceSeq: _sourceSeq,
+            saveCheckpoint: false,
+          );
+          if (lastSeq != null) _sourceSeq = lastSeq;
         }
 
         // Save checkpoint after both directions complete. One-shot uses
