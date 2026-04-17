@@ -1946,6 +1946,65 @@ void doTest(
 
     await cl.deleteDatabase(dbName);
   });
+
+  test('views and keys', () async {
+    final dbName = 'testdb1';
+    final db = await cl.createDatabase(dbName);
+
+    // prepare test data
+    await db.put(
+      DesignDocument(
+        id: '_design/d',
+        views: {
+          'byGroup': ViewData(
+            map: "function(doc) { if (doc.group) emit(doc.group, null); }",
+          ),
+        },
+      ),
+    );
+    await db.putRaw({'_id': 'a', 'group': 'g-X'});
+    await db.putRaw({'_id': 'b', 'group': 'g-X'});
+    await db.putRaw({'_id': 'c', 'group': 'g-Y'});
+
+    // unfiltered query indexes all rows (sanity)
+    {
+      final all = await db.query('d/byGroup');
+      expect(all!.rows, hasLength(3));
+    }
+
+    // single-string key filter returns the matching rows
+    {
+      final hit = await db.query('d/byGroup', key: '"g-X"');
+      expect(hit!.rows.map((r) => r.id), containsAll(['a', 'b']));
+      expect(hit.rows, hasLength(2));
+    }
+
+    // 'multi-key with the same string works (control)'
+    {
+      final hit = await db.query('d/byGroup', keys: ['"g-X"']);
+      expect(hit!.rows.map((r) => r.id), containsAll(['a', 'b']));
+    }
+
+    // list-wrapping the same key works (control)
+    {
+      // Control: wrapping the key in a 1-element list uses the jsonEncode
+      // branch and matches correctly.
+      await db.put(
+        DesignDocument(
+          id: '_design/d2',
+          views: {
+            'byGroupList': ViewData(
+              map: "function(doc) { if (doc.group) emit([doc.group], null); }",
+            ),
+          },
+        ),
+      );
+      final hit = await db.query('d2/byGroupList', key: '["g-X"]');
+      expect(hit!.rows, hasLength(2));
+    }
+
+    await cl.deleteDatabase(dbName);
+  });
 }
 
 Future<List<TestDocumentOne>> createThreeRevisions(

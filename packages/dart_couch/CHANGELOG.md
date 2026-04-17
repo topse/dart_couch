@@ -1,3 +1,6 @@
+## 0.9.24
+* bugfix for view querying with json keys
+
 ## 0.9.22
 * bugfix: not all documents written to offline were replicated if initial replication was in progress
 

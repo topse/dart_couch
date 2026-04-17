@@ -387,7 +387,15 @@ class HttpDartCouchDb extends DartCouchDb
       res = await httpPost(
         viewPathComplete,
         queryParameters: queryParameters,
-        body: jsonEncode({'keys': keys}),
+        body: jsonEncode({
+          'keys': keys.map((k) {
+            try {
+              return jsonDecode(k);
+            } catch (_) {
+              return k;
+            }
+          }).toList(),
+        }),
       );
     } else {
       res = await httpGet(viewPathComplete, queryParameters: queryParameters);

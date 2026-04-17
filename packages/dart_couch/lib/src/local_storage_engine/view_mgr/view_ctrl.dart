@@ -173,10 +173,8 @@ class ViewCtrl {
         Iterable<LocalViewEntry> temp = entries;
 
         if (normalizedKey != null) {
-          // Convert normalized key to string for comparison with stored keys
-          final String keyAsString = normalizedKey is String
-              ? normalizedKey
-              : jsonEncode(normalizedKey);
+          // Always JSON-encode to match the storage format (jsonEncode in _storeViewEntry)
+          final String keyAsString = jsonEncode(normalizedKey);
           temp = temp.where((entry) => entry.key == keyAsString);
         }
 
