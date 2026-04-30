@@ -18,7 +18,7 @@ import 'messages/login_result.dart';
 import 'messages/session_result.dart';
 import 'messages/user_result.dart';
 
-final Logger _log = Logger("HttpDartCouchServer");
+final Logger _log = Logger("dart_couch-HttpDartCouchServer");
 
 class HttpDartCouchServer extends DartCouchServer with HttpMethods {
   // CouchDB default session timeout is 600 s; we ping at half that by default.

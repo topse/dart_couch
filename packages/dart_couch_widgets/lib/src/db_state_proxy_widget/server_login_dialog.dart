@@ -8,12 +8,20 @@ class ServerLoginDialog extends StatefulWidget {
   final void Function(LoginCredentials)? onLogin;
   final bool isSaveCredentialsAvailable;
 
+  /// If set, pre-fills the server URL field and takes precedence over [initialCredentials].
+  final Uri? serverUrl;
+
+  /// If true and [serverUrl] is set, the server URL input field is hidden entirely.
+  final bool dontAskForServer;
+
   const ServerLoginDialog({
     super.key,
     this.initialCredentials,
     this.errorMessage,
     this.onLogin,
     required this.isSaveCredentialsAvailable,
+    this.serverUrl,
+    this.dontAskForServer = false,
   });
 
   @override
@@ -32,13 +40,20 @@ class _ServerLoginDialogState extends State<ServerLoginDialog> {
   @override
   void initState() {
     super.initState();
-    String url = widget.initialCredentials?.url ?? '';
-    if (url.startsWith('http://')) {
-      _selectedScheme = 'http';
-      url = url.substring(7);
-    } else if (url.startsWith('https://')) {
-      _selectedScheme = 'https';
-      url = url.substring(8);
+    String url;
+    if (widget.serverUrl != null) {
+      final uri = widget.serverUrl!;
+      _selectedScheme = uri.scheme.isNotEmpty ? uri.scheme : 'https';
+      url = uri.toString().substring(_selectedScheme.length + 3);
+    } else {
+      url = widget.initialCredentials?.url ?? '';
+      if (url.startsWith('http://')) {
+        _selectedScheme = 'http';
+        url = url.substring(7);
+      } else if (url.startsWith('https://')) {
+        _selectedScheme = 'https';
+        url = url.substring(8);
+      }
     }
     _urlController = TextEditingController(text: url);
     _usernameController = TextEditingController(
@@ -105,47 +120,50 @@ class _ServerLoginDialogState extends State<ServerLoginDialog> {
                           textAlign: TextAlign.center,
                         ),
                       ),
-                    Row(
-                      children: [
-                        DropdownButton<String>(
-                          value: _selectedScheme,
-                          items: const [
-                            DropdownMenuItem(
-                              value: 'https',
-                              child: Text('https'),
-                            ),
-                            DropdownMenuItem(
-                              value: 'http',
-                              child: Text('http'),
-                            ),
-                          ],
-                          onChanged: (value) {
-                            if (value != null) {
-                              setState(() => _selectedScheme = value);
-                            }
-                          },
-                        ),
-                        const SizedBox(width: 8),
-                        Expanded(
-                          child: TextFormField(
-                            controller: _urlController,
-                            decoration: const InputDecoration(
-                              labelText: 'Server URL',
-                              hintText: 'example.com',
-                              prefixIcon: Icon(Icons.link),
-                            ),
-                            keyboardType: TextInputType.url,
-                            textInputAction: TextInputAction.next,
-                            validator: (value) {
-                              final v = (value ?? '').trim();
-                              if (v.isEmpty) return 'Please enter a server URL';
-                              // No scheme check needed, handled by dropdown
-                              return null;
+                    if (!(widget.dontAskForServer && widget.serverUrl != null))
+                      Row(
+                        children: [
+                          DropdownButton<String>(
+                            value: _selectedScheme,
+                            items: const [
+                              DropdownMenuItem(
+                                value: 'https',
+                                child: Text('https'),
+                              ),
+                              DropdownMenuItem(
+                                value: 'http',
+                                child: Text('http'),
+                              ),
+                            ],
+                            onChanged: (value) {
+                              if (value != null) {
+                                setState(() => _selectedScheme = value);
+                              }
                             },
                           ),
-                        ),
-                      ],
-                    ),
+                          const SizedBox(width: 8),
+                          Expanded(
+                            child: TextFormField(
+                              controller: _urlController,
+                              decoration: const InputDecoration(
+                                labelText: 'Server URL',
+                                hintText: 'example.com',
+                                prefixIcon: Icon(Icons.link),
+                              ),
+                              keyboardType: TextInputType.url,
+                              textInputAction: TextInputAction.next,
+                              validator: (value) {
+                                final v = (value ?? '').trim();
+                                if (v.isEmpty) {
+                                  return 'Please enter a server URL';
+                                }
+                                // No scheme check needed, handled by dropdown
+                                return null;
+                              },
+                            ),
+                          ),
+                        ],
+                      ),
                     const SizedBox(height: 12),
                     TextFormField(
                       controller: _usernameController,

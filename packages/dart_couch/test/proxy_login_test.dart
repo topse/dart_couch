@@ -9,14 +9,20 @@ import 'package:dart_couch/dart_couch.dart';
 
 import 'helper/helper.dart';
 
-final _log = Logger('proxy_login_test');
+final _log = Logger('dart_couch-test-proxy_login_test');
 
 const String _nginxImage = 'nginx:alpine';
 
 /// Finds and kills ALL nginx:alpine containers, regardless of how they were
 /// started. Safe to call even when no nginx container is running.
 Future<void> shutdownAllNginxContainers() async {
-  final result = await Process.run('docker', ['ps', '-a', '-q', '--filter', 'ancestor=$_nginxImage']);
+  final result = await Process.run('docker', [
+    'ps',
+    '-a',
+    '-q',
+    '--filter',
+    'ancestor=$_nginxImage',
+  ]);
   if (result.exitCode != 0) return;
   final ids = result.stdout.toString().trim();
   if (ids.isEmpty) return;
@@ -76,9 +82,7 @@ void main() {
     final ls = LineSplitter();
     for (final line in ls.convert(record.message)) {
       // ignore: avoid_print
-      print(
-        '${record.loggerName} ${record.level.name}: ${record.time}: $line',
-      );
+      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
     }
   });
 

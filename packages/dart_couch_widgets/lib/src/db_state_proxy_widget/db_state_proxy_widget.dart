@@ -49,6 +49,14 @@ class DbStateProxyWidget extends StatefulWidget {
 
   final CredentialsManagerBase? credentialsManager;
 
+  /// If set, pre-fills the server URL field in the login dialog and takes
+  /// precedence over stored credentials.
+  final Uri? serverUrl;
+
+  /// If true and [serverUrl] is set, the server URL input field is hidden
+  /// entirely in the login dialog.
+  final bool dontAskForServer;
+
   const DbStateProxyWidget({
     super.key,
     required this.server,
@@ -57,6 +65,8 @@ class DbStateProxyWidget extends StatefulWidget {
     required this.databaseFileNamePrefix,
     this.onLogin,
     this.credentialsManager,
+    this.serverUrl,
+    this.dontAskForServer = false,
   });
 
   @override
@@ -293,6 +303,8 @@ class _DbStateProxyWidgetState extends State<DbStateProxyWidget> {
           initialCredentials: _lastLoginCredentials,
           onLogin: _handleLogin,
           isSaveCredentialsAvailable: widget.credentialsManager != null,
+          serverUrl: widget.serverUrl,
+          dontAskForServer: widget.dontAskForServer,
         ),
       ),
     );

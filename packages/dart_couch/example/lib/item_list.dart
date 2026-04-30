@@ -291,14 +291,6 @@ class _ItemListState extends State<ItemList> {
                                                       onSubmitted: (value) {
                                                         final intValue =
                                                             int.tryParse(value);
-                                                        final newItem =
-                                                            einkaufslistItem.copyWith(
-                                                              anzahl:
-                                                                  intValue ??
-                                                                  einkaufslistItem
-                                                                      .anzahl,
-                                                            );
-                                                        db!.put(newItem);
                                                         Navigator.of(
                                                           context,
                                                         ).pop(intValue);
@@ -329,14 +321,6 @@ class _ItemListState extends State<ItemList> {
                                                               int.tryParse(
                                                                 controller.text,
                                                               );
-                                                          final newItem =
-                                                              einkaufslistItem.copyWith(
-                                                                anzahl:
-                                                                    value ??
-                                                                    einkaufslistItem
-                                                                        .anzahl,
-                                                              );
-                                                          db!.put(newItem);
                                                           Navigator.of(
                                                             context,
                                                           ).pop(value);
@@ -362,14 +346,6 @@ class _ItemListState extends State<ItemList> {
                                                     final value = int.tryParse(
                                                       controller.text,
                                                     );
-                                                    final newItem =
-                                                        einkaufslistItem.copyWith(
-                                                          anzahl:
-                                                              value ??
-                                                              einkaufslistItem
-                                                                  .anzahl,
-                                                        );
-                                                    db!.put(newItem);
                                                     Navigator.of(
                                                       context,
                                                     ).pop(value);

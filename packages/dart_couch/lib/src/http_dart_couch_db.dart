@@ -24,7 +24,7 @@ import 'messages/database_info.dart';
 import 'messages/revs_diff_result.dart';
 import 'replication_mixin.dart';
 
-final Logger _log = Logger("HttpDartCouchDb");
+final Logger _log = Logger("dart_couch-HttpDartCouchDb");
 
 class HttpDartCouchDb extends DartCouchDb
     with CouchReplicationMixin, HttpMethods {

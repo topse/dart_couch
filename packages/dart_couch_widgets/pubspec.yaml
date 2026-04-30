@@ -1,6 +1,6 @@
 name: dart_couch_widgets
 description: Flutter widgets and helpers for dart_couch - CouchDB offline-first library.
-version: 0.9.4+1
+version: 0.9.6+1
 publish_to: none
 
 environment:

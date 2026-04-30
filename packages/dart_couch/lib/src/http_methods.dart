@@ -10,7 +10,7 @@ import 'messages/couch_db_status_codes.dart';
 import 'api_result.dart';
 import 'platform/http_client_factory.dart';
 
-final Logger _log = Logger("HttpMethods");
+final Logger _log = Logger("dart_couch-HttpMethods");
 
 mixin HttpMethods {
   String? get authCookie;
@@ -226,7 +226,11 @@ mixin HttpMethods {
 
     final sw = Stopwatch()..start();
     _log.fine(
-      'PUT $uri: sending request (${body is String ? body.length : body is List<int> ? body.length : 0} bytes)',
+      'PUT $uri: sending request (${body is String
+          ? body.length
+          : body is List<int>
+          ? body.length
+          : 0} bytes)',
     );
     final streamedResponse = await _httpClient.send(request);
     _log.fine(

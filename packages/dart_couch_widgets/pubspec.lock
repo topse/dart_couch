@@ -79,7 +79,7 @@ packages:
       path: "../dart_couch"
       relative: true
     source: path
-    version: "0.9.10+1"
+    version: "0.9.24+1"
   dart_mappable:
     dependency: transitive
     description:
