@@ -612,6 +612,8 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     bool styleAllDocs = false,
     int? timeout,
     int? seqInterval,
+    ChangesFilter? filter,
+    String? view,
   }) {
     if (_disposed) {
       throw CouchDbException(
@@ -624,6 +626,10 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     assert(docIds == null);
     assert(descending == false);
     assert(feedmode != FeedMode.eventsource);
+    assert(
+      filter != ChangesFilter.view || view != null,
+      'filter: ChangesFilter.view requires a view path',
+    );
     assert(attachments == false);
     assert(attEncodingInfo == false);
     assert(lastEventId == null);
@@ -643,6 +649,13 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     final bool sinceIsNow = since == 'now';
     int? sinceSeq = sinceIsNow ? null : parseSinceSeq(since);
 
+    // When the _view filter is active we run the view's map function over each
+    // candidate document; the engine is reused for the whole subscription.
+    final bool filterActive = filter == ChangesFilter.view;
+    // The filter needs the document body even if the caller didn't request it.
+    final bool loadDocs = includeDocs || filterActive;
+    ViewMapFilter? viewFilter;
+
     // Create a dedicated StreamController for this request
     StreamSubscription? subscription;
     final controller = StreamController<Map<String, dynamic>>(
@@ -650,10 +663,42 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         // when there is no listeners anymore, the http
         // subscription needs to be canceled!
         await subscription?.cancel();
+        viewFilter?.dispose();
       },
     );
 
     unawaited(() async {
+      if (filterActive) {
+        final ViewCtrl? ctrl = await viewMgr.getView(view!);
+        if (ctrl == null) {
+          controller.addError(
+            CouchDbException(
+              CouchDbStatusCodes.notFound,
+              'view "$view" not found for _view filter',
+            ),
+          );
+          await controller.close();
+          return;
+        }
+        viewFilter = ctrl.createMapFilter();
+      }
+
+      // Runs the active _view filter over a change candidate. Tombstones (no
+      // blob) are passed as {_id,_rev,_deleted:true}; per the _view deletion
+      // caveat these usually emit nothing and are therefore excluded.
+      bool passesFilter(LocalDocumentWithBlob ldoc) {
+        final f = viewFilter;
+        if (f == null) return true;
+        final Map<String, dynamic> docJson = ldoc.data != null
+            ? jsonDecode(ldoc.data!) as Map<String, dynamic>
+            : <String, dynamic>{
+                '_id': ldoc.document.docid,
+                '_rev': ldoc.document.rev,
+                '_deleted': true,
+              };
+        return f.emits(docJson);
+      }
+
       if (feedmode == FeedMode.normal || feedmode == FeedMode.longpoll) {
         // normal feed -- just a single response
         // Read documents and updateSeq in a single transaction to get a
@@ -661,7 +706,7 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         // saveAttachment) can update the document between the two queries,
         // causing the changes feed to report a stale revision with a newer
         // lastSeq — which makes replication request a rev that no longer exists.
-        final snapshot = await db.getDocumentsAndUpdateSeq(dbid, includeDocs);
+        final snapshot = await db.getDocumentsAndUpdateSeq(dbid, loadDocs);
         var ldocs = snapshot.docs;
         final dbRecord = snapshot.dbRecord;
         if (dbRecord == null) {
@@ -682,6 +727,10 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
               .where((e) => e.document.seq > sinceSeq)
               .toList(growable: false);
         }
+        // apply the _view filter (runs the view's map over each candidate)
+        if (viewFilter != null) {
+          ldocs = ldocs.where(passesFilter).toList(growable: false);
+        }
         assert(controller.hasListener);
         // Build raw JSON map instead of ChangesResult
         final json = <String, dynamic>{
@@ -698,7 +747,7 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
             if (ldoc.document.deleted == true) {
               changeEntry['deleted'] = true;
             }
-            if (ldoc.data != null) {
+            if (includeDocs && ldoc.data != null) {
               changeEntry['doc'] =
                   jsonDecode(ldoc.data!) as Map<String, dynamic>;
             }
@@ -707,6 +756,7 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         };
         controller.add(json);
         await controller.close();
+        viewFilter?.dispose();
       } else {
         // continuous feed -- stream changes as they occur
         try {
@@ -722,7 +772,7 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
               ? await db.getCurrentUpdateSeq(dbid)
               : sinceSeq;
           subscription = db
-              .watchDocuments(dbid, includeDocs, since: effectiveSince)
+              .watchDocuments(dbid, loadDocs, since: effectiveSince)
               .listen(
                 (LocalDocumentWithBlob ldoc) {
                   if (controller.isClosed) {
@@ -730,6 +780,10 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
                   }
                   // filter out local documents (_local/*) - they don't appear in changes feed
                   if (ldoc.document.docid.startsWith('_local/')) {
+                    return;
+                  }
+                  // apply the _view filter (runs the view's map over the doc)
+                  if (!passesFilter(ldoc)) {
                     return;
                   }
                   // Build raw JSON map for each change
@@ -1205,6 +1259,12 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     return jsonDecode(doc.data!)['_rev'] as String;
   }
 
+  /// Reacting to design-document changes (rebuilding views when a map/reduce
+  /// function changes) is handled lazily and centrally by [ViewMgr.getView],
+  /// which compares each cached view against the current design document on
+  /// every query and rebuilds on a change — covering all write paths (put,
+  /// remove, bulkDocs, replication). This hook is kept as an extension point
+  /// and intentionally does nothing.
   Future<void> _checkViewsAfterDesignDocumentChange(DesignDocument doc) async {}
 
   /// Updates revision for local documents using simplified format "0-N"

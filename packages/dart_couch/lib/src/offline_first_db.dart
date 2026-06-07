@@ -377,6 +377,8 @@ class OfflineFirstDb extends DartCouchDb {
     bool styleAllDocs = false,
     int? timeout,
     int? seqInterval,
+    ChangesFilter? filter,
+    String? view,
   }) {
     return localDb.changes(
       docIds: docIds,
@@ -392,6 +394,8 @@ class OfflineFirstDb extends DartCouchDb {
       styleAllDocs: styleAllDocs,
       timeout: timeout,
       seqInterval: seqInterval,
+      filter: filter,
+      view: view,
     );
   }
 
@@ -410,6 +414,8 @@ class OfflineFirstDb extends DartCouchDb {
     bool styleAllDocs = false,
     int? timeout,
     int? seqInterval,
+    ChangesFilter? filter,
+    String? view,
   }) {
     return localDb.changesRaw(
       docIds: docIds,
@@ -425,6 +431,8 @@ class OfflineFirstDb extends DartCouchDb {
       styleAllDocs: styleAllDocs,
       timeout: timeout,
       seqInterval: seqInterval,
+      filter: filter,
+      view: view,
     );
   }
 

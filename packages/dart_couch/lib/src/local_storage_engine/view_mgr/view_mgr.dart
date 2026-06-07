@@ -101,30 +101,50 @@ class ViewMgr {
               ..where((tbl) => tbl.viewPathShort.equals(viewPathShort)))
             .getSingleOrNull();
     if (row != null) {
-      // Check if this cached view still exists in its design document
-      // (it might have been deleted since the view was cached)
+      // Validate the cached view against its current design document: it may
+      // have been deleted, or its map/reduce definition may have changed since
+      // the view was cached. `effective` is the row the ViewCtrl will use.
+      LocalView effective = row;
       if (viewPathShort != '_all_docs') {
         final ViewPathShortHandler n = ViewPathShortHandler(viewPathShort);
         DesignDocument? designDoc =
             (await dbGetFunction("_design/${n.designDocName}"))
                 as DesignDocument?;
-        if (designDoc?.views?.keys.contains(n.viewName) == false) {
-          // View was deleted from the design document - remove it from cache
-          log.info('ViewMgr.getView: View $viewPathShort was deleted from design document, removing from cache');
+        final ViewData? def = designDoc?.views?[n.viewName];
+        if (def == null) {
+          // View no longer exists (removed from the design document, or the
+          // whole design document was deleted) - remove it from cache.
+          log.info('ViewMgr.getView: View $viewPathShort no longer exists in its design document, removing from cache');
           await (db.delete(
             db.localViews,
           )..where((tbl) => tbl.id.equals(row.id))).go();
           return null;
         }
+        if (def.map != row.mapFunction || def.reduce != row.reduceFunction) {
+          // The view definition changed. Discard the stale index and adopt the
+          // new map/reduce with a reset updateSeq so the next query re-indexes
+          // every document — matching CouchDB, which rebuilds a view when its
+          // design document's view signature changes.
+          log.info('ViewMgr.getView: View $viewPathShort definition changed, invalidating index for rebuild');
+          effective = row.copyWith(
+            mapFunction: def.map,
+            reduceFunction: Value(def.reduce),
+            updateSeq: 0,
+          );
+          await (db.delete(
+            db.localViewEntries,
+          )..where((tbl) => tbl.fkview.equals(row.id))).go();
+          await db.update(db.localViews).replace(effective);
+        }
       }
-      
+
       log.info(
-        'ViewMgr.getView: Found existing view id=${row.id}, updateSeq=${row.updateSeq} for $viewPathShort',
+        'ViewMgr.getView: Found existing view id=${effective.id}, updateSeq=${effective.updateSeq} for $viewPathShort',
       );
       return ViewCtrl(
         db: db,
         dbid: dbid,
-        view: row,
+        view: effective,
         dbGetFunction: dbGetFunction,
       );
     }

@@ -202,7 +202,17 @@ abstract class DartCouchDb with UseDartCouchMixin {
     bool styleAllDocs = false,
     int? timeout,
     int? seqInterval,
+    ChangesFilter? filter,
+    String? view,
   }) {
+    assert(
+      filter != ChangesFilter.view || view != null,
+      'filter: ChangesFilter.view requires a view path (e.g. "designDoc/viewName")',
+    );
+    assert(
+      filter == null || docIds == null || docIds.isEmpty,
+      'filter and docIds cannot be combined',
+    );
     // Concrete implementation that calls changesRaw() and parses results
     return changesRaw(
       docIds: docIds,
@@ -218,6 +228,8 @@ abstract class DartCouchDb with UseDartCouchMixin {
       styleAllDocs: styleAllDocs,
       timeout: timeout,
       seqInterval: seqInterval,
+      filter: filter,
+      view: view,
     ).map((json) {
       // Parse raw JSON into ChangesResult
       if (feedmode == FeedMode.normal || feedmode == FeedMode.longpoll) {
@@ -261,6 +273,8 @@ abstract class DartCouchDb with UseDartCouchMixin {
     bool styleAllDocs = false,
     int? timeout,
     int? seqInterval,
+    ChangesFilter? filter,
+    String? view,
   });
 
   /// get a document by its id
@@ -679,6 +693,27 @@ enum FeedMode {
 
   final String value;
   const FeedMode(this.value);
+}
+
+/// Built-in CouchDB `_changes` filters selectable via [DartCouchDb.changes].
+///
+/// Currently only [view] is supported.
+///
+/// [view] (`filter=_view`) runs an existing view's **map function** as the
+/// filter: a change is emitted iff the map emits at least one row for the
+/// changed document. Requires the `view` argument (`"designDoc/viewName"`).
+///
+/// CAVEAT — deletions: the map runs on the changed document, and a deleted
+/// document is a bare tombstone (`{_id, _rev, _deleted:true}`). Most maps emit
+/// nothing for a tombstone, so **deletions of previously-matching documents
+/// are NOT reported** by this filter. This is inherent CouchDB behaviour
+/// (`LocalDartCouchDb` matches it for parity); callers that need deletion
+/// liveness must observe deletions through an unfiltered feed.
+enum ChangesFilter {
+  view('_view');
+
+  final String value;
+  const ChangesFilter(this.value);
 }
 
 class OpenRevsResult {

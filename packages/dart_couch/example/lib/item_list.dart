@@ -1,4 +1,7 @@
+import 'dart:async';
+
 import 'package:dart_couch/dart_couch.dart';
+import 'package:dart_couch_widgets/dart_couch_widgets.dart';
 import 'package:flutter/material.dart';
 import 'package:logging/logging.dart';
 
@@ -20,6 +23,26 @@ class ItemList extends StatefulWidget {
 
 class _ItemListState extends State<ItemList> {
   DartCouchDb? db;
+
+  late final CurrentCategoryProvider _categoryProvider;
+  String? _currentCategory;
+
+  StreamSubscription<ViewUpdate>? _viewSub;
+
+  /// All item rows, maintained incrementally from the view.
+  final List<ViewEntry> _baseRows = [];
+
+  /// The rows actually shown: filtered by category, unchecked-first then by
+  /// name. The source of truth for the alphabet scroll bar's index math.
+  List<ViewEntry> _displayRows = [];
+
+  /// Drives the [AnimatedViewList]: a first [ViewSnapshot], then incremental
+  /// [ViewChanges] computed from successive display lists via [ViewDiff] — so
+  /// only the rows that actually changed animate / rebuild.
+  final StreamController<ViewUpdate> _displayUpdates =
+      StreamController<ViewUpdate>();
+  bool _pushedInitialDisplay = false;
+
   final ScrollController _scrollController = ScrollController();
   final Map<String, int> _letterIndices = {};
   final List<String> _letters = [];
@@ -33,20 +56,103 @@ class _ItemListState extends State<ItemList> {
   void initState() {
     super.initState();
 
+    _categoryProvider = di.get<CurrentCategoryProvider>();
+    _currentCategory = _categoryProvider.value;
+    _categoryProvider.addListener(_onCategoryChanged);
+
     () async {
       final OfflineFirstServer server = di.get<OfflineFirstServer>();
       final ddb = await server.db(
         DartCouchDb.usernameToDbName(server.username!),
       );
       assert(ddb != null);
+      if (!mounted) return;
       setState(() {
         db = ddb;
       });
+      _viewSub = ddb!
+          .useViewWithChanges('einkaufslistViews/itemsView', includeDocs: true)
+          .listen(_onViewUpdate);
     }();
+  }
+
+  void _onCategoryChanged() {
+    _currentCategory = _categoryProvider.value;
+    _recomputeDisplay();
+  }
+
+  /// Applies the view's edit script to [_baseRows], then recomputes the display.
+  void _onViewUpdate(ViewUpdate update) {
+    switch (update) {
+      case ViewSnapshot(:final result):
+        _baseRows
+          ..clear()
+          ..addAll(result?.rows ?? const []);
+      case ViewChanges(:final changes):
+        for (final change in changes) {
+          switch (change) {
+            case ViewRowInserted(:final index, :final row):
+              _baseRows.insert(index, row);
+            case ViewRowRemoved(:final index):
+              _baseRows.removeAt(index);
+            case ViewRowChanged(:final index, :final row):
+              _baseRows[index] = row;
+          }
+        }
+    }
+    _recomputeDisplay();
+  }
+
+  /// Filters by category and re-sorts (unchecked first, then by name), then
+  /// emits the *difference* to [_displayUpdates] so the list animates only the
+  /// rows that changed.
+  void _recomputeDisplay() {
+    final filtered = _baseRows.where((e) {
+      if (_currentCategory == null) return true;
+      return (e.doc as EinkaufslistItem).category == _currentCategory;
+    });
+
+    final uncheckedItems =
+        filtered
+            .where((e) => (e.doc as EinkaufslistItem).erledigt == false)
+            .toList()
+          ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
+    final checkedItems =
+        filtered
+            .where((e) => (e.doc as EinkaufslistItem).erledigt == true)
+            .toList()
+          ..sort((a, b) => a.key.toString().compareTo(b.key.toString()));
+
+    final newDisplay = [...uncheckedItems, ...checkedItems];
+
+    // Alphabet scroll bar bookkeeping.
+    _uncheckedItemsCount = uncheckedItems.length;
+    _totalItemsCount = newDisplay.length;
+    _buildLetterIndex(checkedItems);
+
+    if (!_pushedInitialDisplay) {
+      _pushedInitialDisplay = true;
+      _displayRows = newDisplay;
+      _displayUpdates.add(
+        ViewSnapshot(
+          ViewResult(totalRows: newDisplay.length, offset: 0, rows: newDisplay),
+        ),
+      );
+    } else {
+      final changes = ViewDiff.compute(_displayRows, newDisplay);
+      _displayRows = newDisplay;
+      if (changes.isNotEmpty) _displayUpdates.add(ViewChanges(changes));
+    }
+
+    // Rebuild the alphabet scroll bar (its counters/indices may have changed).
+    if (mounted) setState(() {});
   }
 
   @override
   void dispose() {
+    _categoryProvider.removeListener(_onCategoryChanged);
+    unawaited(_viewSub?.cancel());
+    unawaited(_displayUpdates.close());
     _scrollController.dispose();
     _currentLetterGroup.dispose();
     super.dispose();
@@ -58,386 +164,57 @@ class _ItemListState extends State<ItemList> {
       return const Center(child: CircularProgressIndicator());
     }
 
-    final Stream<ViewResult?> itemsStream = db!.useView(
-      'einkaufslistViews/itemsView',
-      includeDocs: true,
-    );
-
-    return StreamBuilder<ViewResult?>(
-      stream: itemsStream,
-      builder: (context, snapshot) {
-        _log.info("ItemList: ${snapshot.connectionState}");
-        if (snapshot.connectionState == ConnectionState.waiting) {
-          return const Center(child: CircularProgressIndicator());
-        }
-        if (snapshot.hasError) {
-          return Center(child: Text('Error: \\${snapshot.error}'));
-        }
-        final items = snapshot.data?.rows ?? [];
-        final provider = di.get<CurrentCategoryProvider>();
-
-        return ValueListenableBuilder<String?>(
-          valueListenable: provider,
-          builder: (context, currentCategoryId, _) {
-            final filteredItems = items.where((e) {
-              if (currentCategoryId == null) return true;
-              final item = e.doc as EinkaufslistItem;
-              return item.category == currentCategoryId;
-            }).toList();
-
-            // Resort: unchecked first (erledigt == false), then checked, both sorted by key
-            final uncheckedItems =
-                filteredItems
-                    .where(
-                      (item) =>
-                          (item.doc as EinkaufslistItem).erledigt == false,
-                    )
-                    .toList()
-                  ..sort(
-                    (a, b) => a.key.toString().compareTo(b.key.toString()),
-                  );
-
-            final checkedItems =
-                filteredItems
-                    .where(
-                      (item) => (item.doc as EinkaufslistItem).erledigt == true,
-                    )
-                    .toList()
-                  ..sort(
-                    (a, b) => a.key.toString().compareTo(b.key.toString()),
-                  );
-
-            _uncheckedItemsCount = uncheckedItems.length;
-            final sortedItems = [...uncheckedItems, ...checkedItems];
-            _totalItemsCount = sortedItems.length;
-
-            // Build letter index only for checked items
-            _buildLetterIndex(checkedItems);
-
-            return Column(
-              children: [
-                // Header row
-                Container(
-                  padding: const EdgeInsets.symmetric(
-                    horizontal: 16,
-                    vertical: 8,
-                  ),
-                  decoration: BoxDecoration(
-                    color: Theme.of(context).colorScheme.surface,
-                    border: Border(
-                      bottom: BorderSide(
-                        color: Theme.of(context).colorScheme.outline,
-                        width: 1,
+    return Column(
+      children: [
+        const _ItemListHeader(),
+        // List content
+        Expanded(
+          child: Row(
+            children: [
+              Expanded(
+                child: AnimatedViewList(
+                  updates: _displayUpdates.stream,
+                  controller: _scrollController,
+                  placeholderBuilder: (_) =>
+                      const Center(child: CircularProgressIndicator()),
+                  itemBuilder: (context, row, index, animation) =>
+                      SizeTransition(
+                        sizeFactor: animation,
+                        child: ShoppingItemTile(
+                          db: db!,
+                          item: row.doc as EinkaufslistItem,
+                        ),
                       ),
+                ),
+              ),
+              // Alphabet scroll navigation
+              LayoutBuilder(
+                builder: (context, constraints) {
+                  return GestureDetector(
+                    onVerticalDragUpdate: (details) {
+                      _handleDragUpdate(
+                        details.localPosition,
+                        constraints.maxHeight,
+                      );
+                    },
+                    onTapDown: (details) {
+                      _handleDragUpdate(
+                        details.localPosition,
+                        constraints.maxHeight,
+                      );
+                    },
+                    child: Container(
+                      width: 48,
+                      color: Theme.of(context).colorScheme.surface,
+                      child: Center(child: _buildAlphabetButtons()),
                     ),
-                  ),
-                  child: Row(
-                    children: [
-                      const SizedBox(width: 56), // Space for checkbox
-                      Expanded(
-                        child: Text(
-                          'Name',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                        ),
-                      ),
-                      const SizedBox(width: 8),
-                      SizedBox(
-                        width: 60,
-                        child: Text(
-                          'Anzahl',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                      SizedBox(
-                        width: 48,
-                        child: Text(
-                          'Einheit',
-                          style: const TextStyle(
-                            fontSize: 12,
-                            fontWeight: FontWeight.bold,
-                          ),
-                          textAlign: TextAlign.center,
-                        ),
-                      ),
-                      const SizedBox(
-                        width: 48,
-                      ), // Space for alphabet scroll bar
-                    ],
-                  ),
-                ),
-                // List content
-                Expanded(
-                  child: Row(
-                    children: [
-                      Expanded(
-                        child: ListView.builder(
-                          controller: _scrollController,
-                          itemCount: sortedItems.length,
-                          itemBuilder: (context, index) {
-                            final row = sortedItems[index];
-                            final einkaufslistItem =
-                                row.doc as EinkaufslistItem;
-                            return ListTile(
-                              onTap: () async {
-                                // fetch categories for dialog
-                                final viewResult = await db!.query(
-                                  'einkaufslistViews/categoryView',
-                                  includeDocs: true,
-                                );
-                                final categories = <EinkaufslistCategory>[];
-                                if (viewResult != null) {
-                                  categories.addAll(
-                                    viewResult.rows.map(
-                                      (r) => r.doc as EinkaufslistCategory,
-                                    ),
-                                  );
-                                }
-
-                                if (context.mounted == false) return;
-
-                                final updated =
-                                    await showDialog<EinkaufslistItem?>(
-                                      context: context,
-                                      builder: (context) => NewItemDialogFixed(
-                                        db: db!,
-                                        item: einkaufslistItem,
-                                      ),
-                                    );
-                                if (updated != null) {
-                                  await db!.put(updated);
-                                }
-                              },
-                              leading: Checkbox(
-                                value: einkaufslistItem.erledigt,
-                                onChanged: (bool? value) async {
-                                  assert(value != null);
-                                  final updatedItem = einkaufslistItem.copyWith(
-                                    erledigt: value,
-                                  );
-                                  await db!.put(updatedItem);
-                                },
-                              ),
-                              title: Row(
-                                children: [
-                                  Expanded(
-                                    child: Text(
-                                      row.key.toString(),
-                                      style: const TextStyle(fontSize: 16),
-                                    ),
-                                  ),
-                                  const SizedBox(width: 8),
-                                  // Number column (fixed width)
-                                  SizedBox(
-                                    width: 60,
-                                    child: GestureDetector(
-                                      onTap: () async {
-                                        final controller =
-                                            TextEditingController(
-                                              text:
-                                                  einkaufslistItem.anzahl ==
-                                                      null
-                                                  ? ""
-                                                  : einkaufslistItem.anzahl
-                                                        .toString(),
-                                            );
-                                        final focusNode = FocusNode();
-                                        final result = await showDialog<int>(
-                                          context: context,
-                                          builder: (context) {
-                                            return AlertDialog(
-                                              title: const Text(
-                                                'Anzahl ändern',
-                                              ),
-                                              content: Focus(
-                                                autofocus: true,
-                                                child: Builder(
-                                                  builder: (context) {
-                                                    WidgetsBinding.instance
-                                                        .addPostFrameCallback((
-                                                          _,
-                                                        ) {
-                                                          if (focusNode
-                                                              .canRequestFocus) {
-                                                            focusNode
-                                                                .requestFocus();
-                                                            controller
-                                                                    .selection =
-                                                                TextSelection(
-                                                                  baseOffset: 0,
-                                                                  extentOffset:
-                                                                      controller
-                                                                          .text
-                                                                          .length,
-                                                                );
-                                                          }
-                                                        });
-                                                    return TextField(
-                                                      controller: controller,
-                                                      focusNode: focusNode,
-                                                      keyboardType:
-                                                          TextInputType.number,
-                                                      decoration:
-                                                          const InputDecoration(
-                                                            labelText:
-                                                                'Neue Anzahl',
-                                                          ),
-                                                      onSubmitted: (value) {
-                                                        final intValue =
-                                                            int.tryParse(value);
-                                                        Navigator.of(
-                                                          context,
-                                                        ).pop(intValue);
-                                                      },
-                                                    );
-                                                  },
-                                                ),
-                                                onKeyEvent:
-                                                    (
-                                                      FocusNode node,
-                                                      KeyEvent event,
-                                                    ) {
-                                                      if (event
-                                                          is KeyDownEvent) {
-                                                        if (event.logicalKey ==
-                                                            LogicalKeyboardKey
-                                                                .escape) {
-                                                          Navigator.of(
-                                                            context,
-                                                          ).pop();
-                                                          return KeyEventResult
-                                                              .handled;
-                                                        } else if (event
-                                                                .logicalKey ==
-                                                            LogicalKeyboardKey
-                                                                .enter) {
-                                                          final value =
-                                                              int.tryParse(
-                                                                controller.text,
-                                                              );
-                                                          Navigator.of(
-                                                            context,
-                                                          ).pop(value);
-                                                          return KeyEventResult
-                                                              .handled;
-                                                        }
-                                                      }
-                                                      return KeyEventResult
-                                                          .ignored;
-                                                    },
-                                              ),
-                                              actions: [
-                                                TextButton(
-                                                  onPressed: () => Navigator.of(
-                                                    context,
-                                                  ).pop(),
-                                                  child: const Text(
-                                                    'Abbrechen',
-                                                  ),
-                                                ),
-                                                TextButton(
-                                                  onPressed: () {
-                                                    final value = int.tryParse(
-                                                      controller.text,
-                                                    );
-                                                    Navigator.of(
-                                                      context,
-                                                    ).pop(value);
-                                                  },
-                                                  child: const Text('OK'),
-                                                ),
-                                              ],
-                                            );
-                                          },
-                                        );
-                                        if (result != null &&
-                                            result != einkaufslistItem.anzahl) {
-                                          final updatedItem = einkaufslistItem
-                                              .copyWith(anzahl: result);
-                                          await db!.put(updatedItem);
-                                        }
-                                      },
-                                      child: Container(
-                                        width: double.infinity,
-                                        padding: const EdgeInsets.symmetric(
-                                          horizontal: 4,
-                                          vertical: 6,
-                                        ),
-                                        decoration: BoxDecoration(
-                                          color: Theme.of(
-                                            context,
-                                          ).colorScheme.surfaceBright,
-                                          borderRadius: BorderRadius.circular(
-                                            4,
-                                          ),
-                                        ),
-                                        alignment: Alignment.center,
-                                        child: Text(
-                                          einkaufslistItem.anzahl != null
-                                              ? einkaufslistItem.anzahl
-                                                    .toString()
-                                              : " ",
-                                          style: const TextStyle(
-                                            fontWeight: FontWeight.bold,
-                                            fontSize: 16,
-                                          ),
-                                        ),
-                                      ),
-                                    ),
-                                  ),
-                                  // Einheit column (fixed width)
-                                  SizedBox(
-                                    width: 48,
-                                    child: Text(
-                                      einkaufslistItem.einheit ?? "",
-                                      style: const TextStyle(fontSize: 16),
-                                      textAlign: TextAlign.center,
-                                    ),
-                                  ),
-                                ],
-                              ),
-                            );
-                          },
-                        ),
-                      ),
-                      // Alphabet scroll navigation
-                      LayoutBuilder(
-                        builder: (context, constraints) {
-                          return GestureDetector(
-                            onVerticalDragUpdate: (details) {
-                              _handleDragUpdate(
-                                details.localPosition,
-                                constraints.maxHeight,
-                              );
-                            },
-                            onTapDown: (details) {
-                              _handleDragUpdate(
-                                details.localPosition,
-                                constraints.maxHeight,
-                              );
-                            },
-                            child: Container(
-                              width: 48,
-                              color: Theme.of(context).colorScheme.surface,
-                              child: Center(child: _buildAlphabetButtons()),
-                            ),
-                          );
-                        },
-                      ),
-                    ],
-                  ),
-                ),
-              ],
-            );
-          },
-        );
-      },
+                  );
+                },
+              ),
+            ],
+          ),
+        ),
+      ],
     );
   }
 
@@ -616,6 +393,216 @@ class _ItemListState extends State<ItemList> {
 
     _log.info(
       'No items found for group: $group, available letters: ${_letterIndices.keys}',
+    );
+  }
+}
+
+/// Header row above the shopping list (column labels).
+class _ItemListHeader extends StatelessWidget {
+  const _ItemListHeader();
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 8),
+      decoration: BoxDecoration(
+        color: Theme.of(context).colorScheme.surface,
+        border: Border(
+          bottom: BorderSide(
+            color: Theme.of(context).colorScheme.outline,
+            width: 1,
+          ),
+        ),
+      ),
+      child: Row(
+        children: [
+          const SizedBox(width: 56), // Space for checkbox
+          Expanded(
+            child: Text(
+              'Name',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+            ),
+          ),
+          const SizedBox(width: 8),
+          SizedBox(
+            width: 60,
+            child: Text(
+              'Anzahl',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          SizedBox(
+            width: 48,
+            child: Text(
+              'Einheit',
+              style: const TextStyle(fontSize: 12, fontWeight: FontWeight.bold),
+              textAlign: TextAlign.center,
+            ),
+          ),
+          const SizedBox(width: 48), // Space for alphabet scroll bar
+        ],
+      ),
+    );
+  }
+}
+
+/// A single shopping-list row: tap to edit, checkbox to toggle done, and an
+/// inline quantity ("Anzahl") editor.
+class ShoppingItemTile extends StatelessWidget {
+  final DartCouchDb db;
+  final EinkaufslistItem item;
+
+  const ShoppingItemTile({super.key, required this.db, required this.item});
+
+  Future<void> _edit(BuildContext context) async {
+    final updated = await showDialog<EinkaufslistItem?>(
+      context: context,
+      builder: (context) => NewItemDialogFixed(db: db, item: item),
+    );
+    if (updated != null) {
+      await db.put(updated);
+    }
+  }
+
+  Future<void> _editAnzahl(BuildContext context) async {
+    final result = await showDialog<int>(
+      context: context,
+      builder: (context) => _AnzahlDialog(initialValue: item.anzahl),
+    );
+    if (result != null && result != item.anzahl) {
+      await db.put(item.copyWith(anzahl: result));
+    }
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return ListTile(
+      onTap: () => _edit(context),
+      leading: Checkbox(
+        value: item.erledigt,
+        onChanged: (bool? value) async {
+          assert(value != null);
+          await db.put(item.copyWith(erledigt: value));
+        },
+      ),
+      title: Row(
+        children: [
+          Expanded(
+            child: Text(item.name, style: const TextStyle(fontSize: 16)),
+          ),
+          const SizedBox(width: 8),
+          // Number column (fixed width)
+          SizedBox(
+            width: 60,
+            child: GestureDetector(
+              onTap: () => _editAnzahl(context),
+              child: Container(
+                width: double.infinity,
+                padding: const EdgeInsets.symmetric(horizontal: 4, vertical: 6),
+                decoration: BoxDecoration(
+                  color: Theme.of(context).colorScheme.surfaceBright,
+                  borderRadius: BorderRadius.circular(4),
+                ),
+                alignment: Alignment.center,
+                child: Text(
+                  item.anzahl != null ? item.anzahl.toString() : " ",
+                  style: const TextStyle(
+                    fontWeight: FontWeight.bold,
+                    fontSize: 16,
+                  ),
+                ),
+              ),
+            ),
+          ),
+          // Einheit column (fixed width)
+          SizedBox(
+            width: 48,
+            child: Text(
+              item.einheit ?? "",
+              style: const TextStyle(fontSize: 16),
+              textAlign: TextAlign.center,
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// Dialog for editing an item's quantity ("Anzahl"). Owns its text controller
+/// and focus node so they are disposed correctly.
+class _AnzahlDialog extends StatefulWidget {
+  final int? initialValue;
+
+  const _AnzahlDialog({this.initialValue});
+
+  @override
+  State<_AnzahlDialog> createState() => _AnzahlDialogState();
+}
+
+class _AnzahlDialogState extends State<_AnzahlDialog> {
+  late final TextEditingController _controller;
+  final FocusNode _focusNode = FocusNode();
+
+  @override
+  void initState() {
+    super.initState();
+    _controller = TextEditingController(
+      text: widget.initialValue?.toString() ?? "",
+    );
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (_focusNode.canRequestFocus) {
+        _focusNode.requestFocus();
+        _controller.selection = TextSelection(
+          baseOffset: 0,
+          extentOffset: _controller.text.length,
+        );
+      }
+    });
+  }
+
+  @override
+  void dispose() {
+    _controller.dispose();
+    _focusNode.dispose();
+    super.dispose();
+  }
+
+  void _submit() => Navigator.of(context).pop(int.tryParse(_controller.text));
+
+  @override
+  Widget build(BuildContext context) {
+    return AlertDialog(
+      title: const Text('Anzahl ändern'),
+      content: Focus(
+        onKeyEvent: (FocusNode node, KeyEvent event) {
+          if (event is KeyDownEvent) {
+            if (event.logicalKey == LogicalKeyboardKey.escape) {
+              Navigator.of(context).pop();
+              return KeyEventResult.handled;
+            } else if (event.logicalKey == LogicalKeyboardKey.enter) {
+              _submit();
+              return KeyEventResult.handled;
+            }
+          }
+          return KeyEventResult.ignored;
+        },
+        child: TextField(
+          controller: _controller,
+          focusNode: _focusNode,
+          keyboardType: TextInputType.number,
+          decoration: const InputDecoration(labelText: 'Neue Anzahl'),
+          onSubmitted: (_) => _submit(),
+        ),
+      ),
+      actions: [
+        TextButton(
+          onPressed: () => Navigator.of(context).pop(),
+          child: const Text('Abbrechen'),
+        ),
+        TextButton(onPressed: _submit, child: const Text('OK')),
+      ],
     );
   }
 }

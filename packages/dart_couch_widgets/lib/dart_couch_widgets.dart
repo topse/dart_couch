@@ -1,5 +1,6 @@
 library;
 
+export 'src/animated_view_list.dart';
 export 'src/value_listenable_builder.dart';
 export 'src/db_state_proxy_widget/db_state_proxy_widget.dart';
 export 'src/db_state_proxy_widget/network_retry_dialog.dart';

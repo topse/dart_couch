@@ -580,9 +580,15 @@ class HttpDartCouchDb extends DartCouchDb
     bool styleAllDocs = false,
     int? timeout,
     int? seqInterval,
+    ChangesFilter? filter,
+    String? view,
   }) {
     // check for unsupported settings
     assert(feedmode != FeedMode.eventsource);
+    assert(
+      filter != ChangesFilter.view || view != null,
+      'filter: ChangesFilter.view requires a view path',
+    );
 
     // Create a dedicated StreamController for this request
     StreamSubscription<String>? subscription;
@@ -603,8 +609,12 @@ class HttpDartCouchDb extends DartCouchDb
         final response = await httpGetStream(
           "$dbname/_changes",
           queryParameters: {
-            if (docIds != null && docIds.isNotEmpty) 'filter': '_doc_ids',
-            if (docIds != null && docIds.isNotEmpty)
+            if (filter != null)
+              'filter': filter.value
+            else if (docIds != null && docIds.isNotEmpty)
+              'filter': '_doc_ids',
+            if (filter == ChangesFilter.view && view != null) 'view': view,
+            if (filter == null && docIds != null && docIds.isNotEmpty)
               'doc_ids': jsonEncode(docIds),
             'descending': descending == true ? 'true' : 'false',
             'feed': feedmode.value,

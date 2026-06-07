@@ -1,3 +1,6 @@
+## 0.9.26
+* Add diff API: useViewWithChanges and useAllDocsWithChanges to enable better ui updates
+
 ## 0.9.24
 * bugfix for view querying with json keys
 

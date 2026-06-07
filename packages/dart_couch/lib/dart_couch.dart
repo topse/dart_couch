@@ -32,4 +32,5 @@ export 'src/offline_first_server_state.dart';
 export 'src/replication_mixin_interface.dart';
 export 'src/use_dart_couch.dart';
 export 'src/value_notifier.dart';
+export 'src/view_diff.dart';
 export 'src/platform/io_shim.dart' show Directory;

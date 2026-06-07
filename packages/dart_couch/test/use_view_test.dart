@@ -175,6 +175,414 @@ void doUseDartCouchTests(CouchTestManager cm, DbMode mode) {
       await sub.cancel();
     });
 
+    test('useView includeDocs reflects updates, additions and deletions',
+        () async {
+      final ddoc = CouchDocumentBase(
+        id: '_design/inc_test',
+        unmappedProps: {
+          'views': {
+            'by_name': {
+              'map': 'function(doc) { if (doc.name) emit(doc.name, 1); }',
+            },
+          },
+        },
+      );
+      await db.put(ddoc);
+
+      await db.put(
+        EinkaufslistItem(
+          id: 'inc-a',
+          name: 'Apple',
+          erledigt: false,
+          anzahl: 1,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+      await db.put(
+        EinkaufslistItem(
+          id: 'inc-b',
+          name: 'Banana',
+          erledigt: false,
+          anzahl: 2,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+
+      final emissions = <ViewResult?>[];
+      final sub = db
+          .useView('inc_test/by_name', includeDocs: true)
+          .listen(emissions.add);
+
+      // Initial emission: both docs present, with bodies.
+      await waitForCondition(() async => emissions.isNotEmpty);
+      expect(emissions.last!.rows.length, equals(2));
+      for (final row in emissions.last!.rows) {
+        expect(row.doc, isNotNull);
+      }
+
+      // Update one doc's body — the incremental refetch must show the new
+      // value, while the untouched doc is reused from cache (still correct).
+      final beforeUpdate = emissions.length;
+      final a = await db.get('inc-a') as EinkaufslistItem;
+      await db.put(a.copyWith(anzahl: 99));
+      await waitForCondition(() async => emissions.length > beforeUpdate);
+      final updatedRow = emissions.last!.rows.firstWhere((r) => r.id == 'inc-a');
+      expect((updatedRow.doc as EinkaufslistItem).anzahl, equals(99));
+      final reusedRow = emissions.last!.rows.firstWhere((r) => r.id == 'inc-b');
+      expect((reusedRow.doc as EinkaufslistItem).name, equals('Banana'));
+
+      // Add a doc — it appears with its body.
+      final beforeAdd = emissions.length;
+      await db.put(
+        EinkaufslistItem(
+          id: 'inc-c',
+          name: 'Cherry',
+          erledigt: false,
+          anzahl: 3,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+      await waitForCondition(
+        () async =>
+            emissions.length > beforeAdd &&
+            (emissions.last?.rows.any((r) => r.id == 'inc-c') ?? false),
+      );
+      final addedRow = emissions.last!.rows.firstWhere((r) => r.id == 'inc-c');
+      expect((addedRow.doc as EinkaufslistItem).name, equals('Cherry'));
+
+      // Delete a doc — its row must disappear (cache eviction on the
+      // unfiltered changes feed; this is the deletion-liveness guarantee).
+      final beforeDelete = emissions.length;
+      final c = await db.get('inc-c') as EinkaufslistItem;
+      await db.remove(c.id!, c.rev!);
+      await waitForCondition(
+        () async =>
+            emissions.length > beforeDelete &&
+            (emissions.last?.rows.every((r) => r.id != 'inc-c') ?? false),
+      );
+      expect(emissions.last!.rows.any((r) => r.id == 'inc-c'), isFalse);
+      expect(emissions.last!.rows.length, equals(2));
+
+      await sub.cancel();
+    });
+
+    test('useViewWithChanges emits a snapshot then incremental changes',
+        () async {
+      await db.put(
+        CouchDocumentBase(
+          id: '_design/wc_test',
+          unmappedProps: {
+            'views': {
+              'by_name': {
+                'map': 'function(doc) { if (doc.name) emit(doc.name, 1); }',
+              },
+            },
+          },
+        ),
+      );
+      await db.put(
+        EinkaufslistItem(
+          id: 'wc-a',
+          name: 'Apple',
+          erledigt: false,
+          anzahl: 1,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+      await db.put(
+        EinkaufslistItem(
+          id: 'wc-b',
+          name: 'Banana',
+          erledigt: false,
+          anzahl: 2,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+
+      // Maintain a local list by applying the ViewUpdate edit script; it must
+      // track the view through add / update / delete.
+      final updates = <ViewUpdate>[];
+      final current = <ViewEntry>[];
+      void apply(ViewUpdate u) {
+        updates.add(u);
+        switch (u) {
+          case ViewSnapshot(:final result):
+            current
+              ..clear()
+              ..addAll(result?.rows ?? const []);
+          case ViewChanges(:final changes):
+            for (final c in changes) {
+              switch (c) {
+                case ViewRowInserted(:final index, :final row):
+                  current.insert(index, row);
+                case ViewRowRemoved(:final index):
+                  current.removeAt(index);
+                case ViewRowChanged(:final index, :final row):
+                  current[index] = row;
+              }
+            }
+        }
+      }
+
+      final sub = db
+          .useViewWithChanges('wc_test/by_name', includeDocs: true)
+          .listen(apply);
+
+      // First event is a full snapshot with the initial two rows.
+      await waitForCondition(() async => updates.isNotEmpty);
+      expect(updates.first, isA<ViewSnapshot>());
+      expect(current.length, equals(2));
+
+      // Add → an incremental ViewChanges; the row appears.
+      final beforeAdd = updates.length;
+      await db.put(
+        EinkaufslistItem(
+          id: 'wc-c',
+          name: 'Cherry',
+          erledigt: false,
+          anzahl: 3,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+      await waitForCondition(
+        () async =>
+            updates.length > beforeAdd && current.any((r) => r.id == 'wc-c'),
+      );
+      expect(updates.last, isA<ViewChanges>());
+      expect(current.length, equals(3));
+
+      // Update → ViewChanges; the maintained row reflects the new body.
+      final beforeUpdate = updates.length;
+      final a = await db.get('wc-a') as EinkaufslistItem;
+      await db.put(a.copyWith(anzahl: 77));
+      await waitForCondition(() async => updates.length > beforeUpdate);
+      final aRow = current.firstWhere((r) => r.id == 'wc-a');
+      expect((aRow.doc as EinkaufslistItem).anzahl, equals(77));
+
+      // Delete → ViewChanges; the row is gone.
+      final beforeDelete = updates.length;
+      final c = await db.get('wc-c') as EinkaufslistItem;
+      await db.remove(c.id!, c.rev!);
+      await waitForCondition(
+        () async =>
+            updates.length > beforeDelete &&
+            current.every((r) => r.id != 'wc-c'),
+      );
+      expect(current.length, equals(2));
+
+      await sub.cancel();
+    });
+
+    test('useViewWithChanges emits fresh snapshots across null boundaries', () async {
+      // Subscribe before the view (its design document) exists.
+      final updates = <ViewUpdate>[];
+      final current = <ViewEntry>[];
+      void apply(ViewUpdate u) {
+        updates.add(u);
+        switch (u) {
+          case ViewSnapshot(:final result):
+            current
+              ..clear()
+              ..addAll(result?.rows ?? const []);
+          case ViewChanges(:final changes):
+            for (final c in changes) {
+              switch (c) {
+                case ViewRowInserted(:final index, :final row):
+                  current.insert(index, row);
+                case ViewRowRemoved(:final index):
+                  current.removeAt(index);
+                case ViewRowChanged(:final index, :final row):
+                  current[index] = row;
+              }
+            }
+        }
+      }
+
+      final sub = db
+          .useViewWithChanges('nb_test/by_name', includeDocs: true)
+          .listen(apply);
+
+      // First event: a snapshot with a null result (the view does not exist).
+      await waitForCondition(() async => updates.isNotEmpty);
+      expect(updates.first, isA<ViewSnapshot>());
+      expect((updates.first as ViewSnapshot).result, isNull);
+
+      // Create the view and a document. The view appearing is a null -> non-null
+      // boundary, so it is delivered as another ViewSnapshot, not a delta.
+      await db.put(
+        CouchDocumentBase(
+          id: '_design/nb_test',
+          unmappedProps: {
+            'views': {
+              'by_name': {
+                'map': 'function(doc) { if (doc.name) emit(doc.name, 1); }',
+              },
+            },
+          },
+        ),
+      );
+      await db.put(
+        EinkaufslistItem(
+          id: 'nb-a',
+          name: 'Apple',
+          erledigt: false,
+          anzahl: 1,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+
+      await waitForCondition(() async => current.any((r) => r.id == 'nb-a'));
+      expect(updates.whereType<ViewSnapshot>().length, greaterThanOrEqualTo(2));
+
+      await sub.cancel();
+    });
+
+    test('useViewWithChanges reports a key change as a reorder', () async {
+      await db.put(
+        CouchDocumentBase(
+          id: '_design/mv_test',
+          unmappedProps: {
+            'views': {
+              'by_name': {
+                'map': 'function(doc) { if (doc.name) emit(doc.name, 1); }',
+              },
+            },
+          },
+        ),
+      );
+      await db.put(
+        EinkaufslistItem(
+          id: 'mv-a',
+          name: 'Apple',
+          erledigt: false,
+          anzahl: 1,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+      await db.put(
+        EinkaufslistItem(
+          id: 'mv-b',
+          name: 'Banana',
+          erledigt: false,
+          anzahl: 1,
+          einheit: 'Stk',
+          category: 'Fruit',
+        ),
+      );
+
+      final current = <ViewEntry>[];
+      void apply(ViewUpdate u) {
+        switch (u) {
+          case ViewSnapshot(:final result):
+            current
+              ..clear()
+              ..addAll(result?.rows ?? const []);
+          case ViewChanges(:final changes):
+            for (final c in changes) {
+              switch (c) {
+                case ViewRowInserted(:final index, :final row):
+                  current.insert(index, row);
+                case ViewRowRemoved(:final index):
+                  current.removeAt(index);
+                case ViewRowChanged(:final index, :final row):
+                  current[index] = row;
+              }
+            }
+        }
+      }
+
+      final sub = db
+          .useViewWithChanges('mv_test/by_name', includeDocs: true)
+          .listen(apply);
+
+      await waitForCondition(() async => current.length == 2);
+      expect(current.map((r) => r.id).toList(), ['mv-a', 'mv-b']); // Apple,Banana
+
+      // Rename Apple -> Zebra: the view key changes, moving the row after Banana.
+      final a = await db.get('mv-a') as EinkaufslistItem;
+      await db.put(a.copyWith(name: 'Zebra'));
+
+      await waitForCondition(
+        () async => current.length == 2 && current.first.id == 'mv-b',
+      );
+      expect(current.map((r) => r.id).toList(), ['mv-b', 'mv-a']); // Banana,Zebra
+
+      await sub.cancel();
+    });
+
+    test('useAllDocsWithChanges emits a snapshot then incremental changes', () async {
+      await db.put(
+        EinkaufslistItem(
+          id: 'adc-a',
+          name: 'A',
+          erledigt: false,
+          anzahl: 1,
+          einheit: 'Stk',
+          category: 'Test',
+        ),
+      );
+      await db.put(
+        EinkaufslistItem(
+          id: 'adc-b',
+          name: 'B',
+          erledigt: false,
+          anzahl: 2,
+          einheit: 'Stk',
+          category: 'Test',
+        ),
+      );
+
+      final updates = <ViewUpdate>[];
+      final current = <ViewEntry>[];
+      void apply(ViewUpdate u) {
+        updates.add(u);
+        switch (u) {
+          case ViewSnapshot(:final result):
+            current
+              ..clear()
+              ..addAll(result?.rows ?? const []);
+          case ViewChanges(:final changes):
+            for (final c in changes) {
+              switch (c) {
+                case ViewRowInserted(:final index, :final row):
+                  current.insert(index, row);
+                case ViewRowRemoved(:final index):
+                  current.removeAt(index);
+                case ViewRowChanged(:final index, :final row):
+                  current[index] = row;
+              }
+            }
+        }
+      }
+
+      final sub = db
+          .useAllDocsWithChanges(keys: ['adc-a', 'adc-b'])
+          .listen(apply);
+
+      await waitForCondition(() async => updates.isNotEmpty);
+      expect(updates.first, isA<ViewSnapshot>());
+      expect(current.length, equals(2));
+
+      // Update one doc → an incremental ViewChanges reflecting the new body.
+      final before = updates.length;
+      final a = await db.get('adc-a') as EinkaufslistItem;
+      await db.put(a.copyWith(anzahl: 55));
+      await waitForCondition(() async => updates.length > before);
+      expect(updates.last, isA<ViewChanges>());
+      final aRow = current.firstWhere((r) => r.id == 'adc-a');
+      expect((aRow.doc as EinkaufslistItem).anzahl, equals(55));
+
+      await sub.cancel();
+    });
+
     test('useAllDocs works correctly', () async {
       EinkaufslistItem docA =
           await db.put(

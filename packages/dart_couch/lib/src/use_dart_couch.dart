@@ -4,6 +4,7 @@ import 'dart_couch_db.dart';
 import 'messages/changes_result.dart';
 import 'messages/couch_document_base.dart';
 import 'messages/view_result.dart';
+import 'view_diff.dart';
 
 /// A PouchDB-like reactive API mixin for DartCouchDb.
 ///
@@ -40,6 +41,8 @@ mixin UseDartCouchMixin {
     bool styleAllDocs = false,
     int? timeout,
     int? seqInterval,
+    ChangesFilter? filter,
+    String? view,
   });
 
   Future<CouchDocumentBase?> get(
@@ -158,7 +161,11 @@ mixin UseDartCouchMixin {
   /// // Later: cancel the subscription
   /// await subscription.cancel();
   /// ```
-  Stream<CouchDocumentBase?> useDoc(String docId, {bool attachments = false}) {
+  Stream<CouchDocumentBase?> useDoc(
+    String docId, {
+    bool attachments = false,
+    int debounceMs = 300,
+  }) {
     late StreamController<CouchDocumentBase?> controller;
     StreamSubscription? changesSub;
     Timer? debounceTimer;
@@ -223,7 +230,7 @@ mixin UseDartCouchMixin {
 
           // For non-deleted changes, debounce and fetch the latest state
           debounceTimer?.cancel();
-          debounceTimer = Timer(const Duration(milliseconds: 100), () {
+          debounceTimer = Timer(Duration(milliseconds: debounceMs), () {
             if (controller.hasListener) unawaited(fetchAndEmit());
           });
         },
@@ -313,14 +320,55 @@ mixin UseDartCouchMixin {
     StreamSubscription? changesSub;
     Timer? debounceTimer;
 
+    // Incremental document cache for the includeDocs path: document bodies are
+    // keyed by doc id and reused across emits, so only documents that actually
+    // changed are re-fetched instead of re-loading the whole view on every
+    // change. [dirtyIds] accumulates the ids reported by the shared changes
+    // feed since the last emit. Both are unused when includeDocs is false.
+    final Map<String, CouchDocumentBase> docCache =
+        <String, CouchDocumentBase>{};
+    Set<String> dirtyIds = <String>{};
+
     Future<void> fetchAndEmit() async {
       if (!controller.hasListener) return;
 
       try {
-        final result = await query(
+        // Cheap path: no document bodies to materialise (also covers reduce
+        // queries, where includeDocs is invalid). The view query is already
+        // lightweight, so emit its result directly.
+        if (!includeDocs) {
+          final result = await query(
+            viewPathShort,
+            includeDocs: false,
+            attachments: attachments,
+            startkey: startkey,
+            endkey: endkey,
+            key: key,
+            keys: keys,
+            limit: limit,
+            skip: skip,
+            descending: descending,
+            group: group,
+            groupLevel: groupLevel,
+            reduce: reduce,
+          );
+          if (controller.hasListener && !controller.isClosed) {
+            controller.add(result);
+          }
+          return;
+        }
+
+        // Incremental path. Snapshot and reset the set of ids changed since the
+        // last emit; any change arriving during this run accumulates into the
+        // fresh set and triggers a subsequent emit (eventual consistency).
+        final Set<String> dirty = dirtyIds;
+        dirtyIds = <String>{};
+
+        // 1. Query view metadata only (id/key/value) — no document bodies.
+        final meta = await query(
           viewPathShort,
-          includeDocs: includeDocs,
-          attachments: attachments,
+          includeDocs: false,
+          attachments: false,
           startkey: startkey,
           endkey: endkey,
           key: key,
@@ -333,8 +381,70 @@ mixin UseDartCouchMixin {
           reduce: reduce,
         );
 
+        if (meta == null) {
+          docCache.clear();
+          if (controller.hasListener && !controller.isClosed) {
+            controller.add(null);
+          }
+          return;
+        }
+
+        // 2. Decide which document bodies must be (re)fetched: those reported
+        //    changed since the last emit, and any not already cached.
+        final Set<String> liveIds = <String>{};
+        final List<String> needed = <String>[];
+        for (final row in meta.rows) {
+          final id = row.id;
+          if (id == null) continue;
+          if (liveIds.add(id)) {
+            if (dirty.contains(id) || !docCache.containsKey(id)) {
+              needed.add(id);
+            }
+          }
+        }
+
+        // 3. Evict cached bodies no longer present in the view (e.g. deleted or
+        //    no longer matched by the map). This is how deletions leave the
+        //    result on the unfiltered changes feed.
+        docCache.removeWhere((id, _) => !liveIds.contains(id));
+
+        // 4. Batch-fetch only the needed bodies and refresh the cache.
+        if (needed.isNotEmpty) {
+          final fetched = await allDocs(
+            keys: needed,
+            includeDocs: true,
+            attachments: attachments,
+          );
+          for (final row in fetched.rows) {
+            final id = row.id;
+            final doc = row.doc;
+            if (id != null && doc != null) {
+              docCache[id] = doc;
+            }
+          }
+        }
+
+        // 5. Assemble the snapshot, attaching cached bodies to metadata rows.
+        final rows = meta.rows
+            .map(
+              (r) => ViewEntry(
+                id: r.id,
+                key: r.key,
+                value: r.value,
+                doc: r.id == null ? null : docCache[r.id],
+                error: r.error,
+              ),
+            )
+            .toList();
+
         if (controller.hasListener && !controller.isClosed) {
-          controller.add(result);
+          controller.add(
+            ViewResult(
+              totalRows: meta.totalRows,
+              offset: meta.offset,
+              rows: rows,
+            ),
+          );
         }
       } catch (e) {
         if (controller.hasListener && !controller.isClosed) {
@@ -349,9 +459,10 @@ mixin UseDartCouchMixin {
       // Emit initial state
       unawaited(fetchAndEmit());
 
-      // Listen to shared changes feed for any document changes
-      // Note: We can't easily filter by which docs affect this view,
-      // so we re-query on any change and let the view index handle it
+      // Listen to the shared (unfiltered) changes feed. The feed is unfiltered
+      // so deletions are observed too — essential for the incremental path to
+      // drop deleted rows from the result. Each change records its doc id as
+      // dirty (so its body is re-fetched) and schedules a debounced re-query.
       changesSub = _sharedChanges.listen(
         (change) {
           // Skip local documents and design documents unless they affect views
@@ -368,6 +479,11 @@ mixin UseDartCouchMixin {
           // Skip local documents (they don't appear in views)
           if (changedDocId?.startsWith('_local/') ?? false) {
             return;
+          }
+
+          // Mark the changed document for re-fetch on the next emit.
+          if (includeDocs && changedDocId != null) {
+            dirtyIds.add(changedDocId);
           }
 
           // Debounce to avoid excessive re-queries
@@ -391,6 +507,105 @@ mixin UseDartCouchMixin {
         debounceTimer?.cancel();
         unawaited(changesSub?.cancel() ?? Future.value());
         _stopChangesListener();
+      },
+    );
+
+    return controller.stream;
+  }
+
+  /// Like [useView], but emits the view **with its changes**: a [ViewUpdate]
+  /// that is either a full [ViewSnapshot] or an incremental [ViewChanges] batch.
+  ///
+  /// - The first event is always a [ViewSnapshot] (the same `ViewResult` shape
+  ///   [useView] emits) — render it directly, no diffing needed.
+  /// - Subsequent events are [ViewChanges] (an ordered [ViewRowChange] edit
+  ///   script) whenever the rows change — apply them to the list you hold.
+  /// - If the view appears or disappears (a null boundary), a fresh
+  ///   [ViewSnapshot] is emitted instead of a delta, so you rebuild cleanly.
+  ///
+  /// This lets a UI rebuild (or animate) only the rows that actually changed.
+  /// The returned stream is single-subscription: each `listen` starts its own
+  /// underlying [useView] subscription and its own initial snapshot.
+  ///
+  /// Parameters are identical to [useView].
+  Stream<ViewUpdate> useViewWithChanges(
+    String viewPathShort, {
+    bool includeDocs = false,
+    bool attachments = false,
+    String? startkey,
+    String? endkey,
+    String? key,
+    List<String>? keys,
+    int? limit,
+    int? skip,
+    bool descending = false,
+    bool group = false,
+    int? groupLevel,
+    bool reduce = true,
+    int debounceMs = 300,
+  }) {
+    return _diffViewResultStream(
+      () => useView(
+        viewPathShort,
+        includeDocs: includeDocs,
+        attachments: attachments,
+        startkey: startkey,
+        endkey: endkey,
+        key: key,
+        keys: keys,
+        limit: limit,
+        skip: skip,
+        descending: descending,
+        group: group,
+        groupLevel: groupLevel,
+        reduce: reduce,
+        debounceMs: debounceMs,
+      ),
+    );
+  }
+
+  /// Wraps a [ViewResult] snapshot stream (such as [useView] or [useAllDocs])
+  /// into a [ViewUpdate] stream: the first event and any null boundary become a
+  /// [ViewSnapshot]; two consecutive non-null results become an incremental
+  /// [ViewChanges] (skipped when nothing changed). Single-subscription, so each
+  /// listener gets its own [source] subscription and its own initial snapshot.
+  Stream<ViewUpdate> _diffViewResultStream(
+    Stream<ViewResult?> Function() source,
+  ) {
+    late StreamController<ViewUpdate> controller;
+    StreamSubscription<ViewResult?>? sub;
+    ViewResult? previous;
+    bool hasPrevious = false;
+
+    controller = StreamController<ViewUpdate>(
+      onListen: () {
+        sub = source().listen(
+          (current) {
+            if (controller.isClosed) return;
+            // First event, or a null boundary (view appeared/disappeared):
+            // emit a full snapshot rather than diffing across null.
+            if (!hasPrevious || previous == null || current == null) {
+              hasPrevious = true;
+              previous = current;
+              controller.add(ViewSnapshot(current));
+              return;
+            }
+            // Both sides present: emit the delta (skip if nothing changed).
+            final changes = ViewDiff.compute(previous!.rows, current.rows);
+            previous = current;
+            if (changes.isNotEmpty) {
+              controller.add(ViewChanges(changes));
+            }
+          },
+          onError: (error) {
+            if (!controller.isClosed) controller.addError(error);
+          },
+          cancelOnError: false,
+        );
+      },
+      onCancel: () async {
+        await sub?.cancel();
+        sub = null;
       },
     );
 
@@ -428,7 +643,7 @@ mixin UseDartCouchMixin {
     List<String>? keys,
     bool includeDocs = true,
     bool attachments = false,
-    int debounceMs = 200,
+    int debounceMs = 300,
   }) {
     late StreamController<ViewResult?> controller;
     StreamSubscription? changesSub;
@@ -506,5 +721,26 @@ mixin UseDartCouchMixin {
     );
 
     return controller.stream;
+  }
+
+  /// Like [useAllDocs], but emits the documents **with their changes** as a
+  /// [ViewUpdate] stream: an initial [ViewSnapshot] followed by incremental
+  /// [ViewChanges] deltas. See [useViewWithChanges] for the emission contract.
+  ///
+  /// Parameters are identical to [useAllDocs].
+  Stream<ViewUpdate> useAllDocsWithChanges({
+    List<String>? keys,
+    bool includeDocs = true,
+    bool attachments = false,
+    int debounceMs = 300,
+  }) {
+    return _diffViewResultStream(
+      () => useAllDocs(
+        keys: keys,
+        includeDocs: includeDocs,
+        attachments: attachments,
+        debounceMs: debounceMs,
+      ),
+    );
   }
 }

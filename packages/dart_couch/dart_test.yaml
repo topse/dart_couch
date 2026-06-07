@@ -1,2 +1,3 @@
 # On some machines the tests run longer than expected
 timeout: 6x
+concurrency: 1

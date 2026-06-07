@@ -45,6 +45,17 @@ class ViewCtrl {
     required this.dbGetFunction,
   });
 
+  /// The view's JavaScript map function source.
+  String get mapFunction => view.mapFunction;
+
+  /// Creates a reusable evaluator that runs this view's map function as a
+  /// `_changes` filter (CouchDB `filter=_view`): a document passes iff the
+  /// map emits at least one row for it.
+  ///
+  /// The caller owns the returned evaluator and MUST [ViewMapFilter.dispose]
+  /// it (it holds a [JsEngine]).
+  ViewMapFilter createMapFilter() => ViewMapFilter(mapFunction);
+
   Future<ViewResult> query({
     bool includeDocs = false,
     bool attachments = false,
@@ -783,4 +794,61 @@ class _ViewEntryIntermediate {
   final String key;
   final LocalViewEntry? entry;
   _ViewEntryIntermediate(this.key, this.entry);
+}
+
+/// Evaluates a view's map function as a `_changes` filter (CouchDB
+/// `filter=_view`): a document "passes" iff the map function emits at least
+/// one row for it.
+///
+/// A single [JsEngine] is reused across many documents, so create one per
+/// filtered changes subscription and [dispose] it when the subscription ends.
+/// This mirrors the map-execution semantics of [ViewCtrl._updateViewEntries]
+/// (only `emit` is injected; map errors are caught and treated as "no emit",
+/// matching CouchDB which logs and skips errored documents).
+class ViewMapFilter {
+  final JsEngine _engine;
+  bool _disposed = false;
+
+  ViewMapFilter._(this._engine);
+
+  factory ViewMapFilter(String mapFunction) {
+    final engine = JsEngine();
+    // emit() only needs to record THAT something was emitted, not the payload.
+    engine.evaluate('''
+      var emitted = [];
+      function emit(key, value) { emitted.push(1); }
+    ''');
+    engine.evaluate('var mapFunction = $mapFunction;');
+    return ViewMapFilter._(engine);
+  }
+
+  /// Returns true if running the map function over [docJson] emits ≥1 row.
+  ///
+  /// Returns false if the map throws (CouchDB logs and skips such documents).
+  /// For tombstones (`{_id, _rev, _deleted:true}`) the map typically accesses
+  /// absent fields and emits nothing, so deletions are excluded — see the
+  /// `filter=_view` deletion caveat documented on `changes()`.
+  bool emits(Map<String, dynamic> docJson) {
+    if (_disposed) throw StateError('ViewMapFilter has been disposed');
+    final result = _engine.evaluate('''
+      (function() {
+        emitted = [];
+        try {
+          mapFunction(${jsonEncode(docJson)});
+          return emitted.length;
+        } catch (e) {
+          return -1;
+        }
+      })()
+    ''');
+    if (result.isError) return false;
+    final n = int.tryParse(result.stringResult.trim()) ?? 0;
+    return n > 0;
+  }
+
+  void dispose() {
+    if (_disposed) return;
+    _disposed = true;
+    _engine.dispose();
+  }
 }

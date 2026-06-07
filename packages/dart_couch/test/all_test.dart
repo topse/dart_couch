@@ -1,3 +1,4 @@
+import 'dart:async';
 import 'dart:math';
 import 'dart:typed_data';
 
@@ -976,6 +977,114 @@ void doTest(
     await cl.deleteDatabase(dbName);
   });
 
+  // Updating a design document's map function mid-session must change
+  // subsequent query results. CouchDB (HTTP) rebuilds the view on the new view
+  // signature; the Local engine rebuilds via
+  // _checkViewsAfterDesignDocumentChange -> ViewMgr.reconcileDesignDocViews,
+  // which invalidates the cached view so the next getView re-indexes with the
+  // new map. Runs for both engines, so it also asserts HTTP↔Local parity.
+  test('design document map change is reflected in queries', () async {
+    final dbName = 'testdb_mapupdate';
+    final db = await cl.createDatabase(dbName);
+
+    // a single document the view will index
+    await db.put(CouchDocumentBase(id: 'doc1', unmappedProps: {'value': 5}));
+
+    // version 1 of the design doc: map emits key 'A'
+    final v1 =
+        await db.put(
+              DesignDocument(
+                id: '_design/md',
+                views: {
+                  'v': ViewData(
+                    map: "function(doc){ if(doc.value) emit('A', doc.value); }",
+                  ),
+                },
+              ),
+            )
+            as DesignDocument;
+
+    // build the index with map version 1 (pins the map on the Local engine)
+    final before = (await db.query('md/v'))!;
+    expect(before.rows, hasLength(1));
+    expect(before.rows[0].key, 'A');
+
+    // update the design doc: same view name, map now emits key 'B'
+    await db.put(
+      DesignDocument(
+        id: '_design/md',
+        rev: v1.rev,
+        views: {
+          'v': ViewData(
+            map: "function(doc){ if(doc.value) emit('B', doc.value); }",
+          ),
+        },
+      ),
+    );
+
+    // The query must reflect the updated map (key 'B'): HTTP rebuilds on the
+    // new signature, Local rebuilds via reconcileDesignDocViews.
+    final after = (await db.query('md/v'))!;
+    expect(after.rows, hasLength(1));
+    expect(
+      after.rows[0].key,
+      'B',
+      reason: 'view should reflect the updated map function',
+    );
+
+    await cl.deleteDatabase(dbName);
+  });
+
+  // Same as above, but the design document is written via bulkDocs — the path
+  // used by replication. The lazy getView rebuild must cover bulk writes too,
+  // otherwise a view-definition change synced from the remote would not take
+  // effect locally. Runs for both engines (parity).
+  test('design document map change via bulkDocs is reflected in queries', () async {
+    final dbName = 'testdb_mapupdate_bulk';
+    final db = await cl.createDatabase(dbName);
+
+    await db.put(CouchDocumentBase(id: 'doc1', unmappedProps: {'value': 5}));
+
+    // write the design doc (map emits 'A') via bulkDocs
+    final r1 = await db.bulkDocs([
+      DesignDocument(
+        id: '_design/mdb',
+        views: {
+          'v': ViewData(
+            map: "function(doc){ if(doc.value) emit('A', doc.value); }",
+          ),
+        },
+      ),
+    ]);
+    expect(r1, hasLength(1));
+    expect(r1[0].ok, isTrue);
+
+    final before = (await db.query('mdb/v'))!;
+    expect(before.rows, hasLength(1));
+    expect(before.rows[0].key, 'A');
+
+    // update the design doc (map now emits 'B') via bulkDocs, reusing the rev
+    final r2 = await db.bulkDocs([
+      DesignDocument(
+        id: '_design/mdb',
+        rev: r1[0].rev,
+        views: {
+          'v': ViewData(
+            map: "function(doc){ if(doc.value) emit('B', doc.value); }",
+          ),
+        },
+      ),
+    ]);
+    expect(r2, hasLength(1));
+    expect(r2[0].ok, isTrue);
+
+    final after = (await db.query('mdb/v'))!;
+    expect(after.rows, hasLength(1));
+    expect(after.rows[0].key, 'B');
+
+    await cl.deleteDatabase(dbName);
+  });
+
   test('getAllDocs', () async {
     final dbName = 'testdb1';
     final db = await cl.createDatabase(dbName);
@@ -1293,6 +1402,153 @@ void doTest(
     await runChangesNormalSinceTest(db);
 
     await cl.deleteDatabase(dbName);
+  });
+
+  // The _view changes filter (filter=_view) runs the view's map function over
+  // each candidate document; a change is emitted only if the map emits ≥1 row.
+  // These tests run for both HTTP and Local, so they also assert parity.
+  // NOTE: they intentionally never mutate the design document mid-session,
+  // because map-definition changes do not propagate live within a session
+  // (see _checkViewsAfterDesignDocumentChange) — that is a separate concern.
+  group('changes filter=_view', () {
+    test('emits only documents the view map matches (normal feed)', () async {
+      final dbName = 'testdb_viewfilter';
+      final db = await cl.createDatabase(dbName);
+
+      await createView(db); // view1 emits iff doc.date && doc.title
+      final matching = await createViewDocuments(db); // 3 docs, all match
+
+      // a document that does NOT satisfy the map (no date/title)
+      await db.put(
+        CouchDocumentBase(id: 'no-match', unmappedProps: {'foo': 'bar'}),
+      );
+
+      final filtered = (await db
+              .changes(filter: ChangesFilter.view, view: 'viewtest/view1')
+              .first)
+          .normal!;
+      final ids = filtered.results.map((r) => r.id).toSet();
+
+      // every matching document is reported ...
+      for (final d in matching) {
+        expect(ids, contains(d.id));
+      }
+      // ... the non-matching doc and the design document are filtered out
+      expect(ids, isNot(contains('no-match')));
+      expect(ids, isNot(contains('_design/viewtest')));
+
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('includeDocs returns bodies for matching documents', () async {
+      final dbName = 'testdb_viewfilter_docs';
+      final db = await cl.createDatabase(dbName);
+
+      await createView(db);
+      await createViewDocuments(db);
+
+      final res = (await db
+              .changes(
+                filter: ChangesFilter.view,
+                view: 'viewtest/view1',
+                includeDocs: true,
+              )
+              .first)
+          .normal!;
+      expect(res.results, isNotEmpty);
+      for (final r in res.results) {
+        expect(r.doc, isNotNull);
+        expect(r.doc!.unmappedProps['title'], isNotNull);
+      }
+
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('excludes deletions of matching documents (tombstone emits '
+        'nothing)', () async {
+      final dbName = 'testdb_viewfilter_del';
+      final db = await cl.createDatabase(dbName);
+
+      await createView(db);
+      final docs = await createViewDocuments(db);
+      final target = docs.firstWhere((d) => d.id == 'biking');
+
+      // sanity: before deletion the document passes the filter
+      final before = (await db
+              .changes(filter: ChangesFilter.view, view: 'viewtest/view1')
+              .first)
+          .normal!;
+      expect(before.results.map((r) => r.id), contains('biking'));
+
+      await db.remove(target.id!, target.rev!);
+
+      // After deletion the tombstone no longer emits, so it drops out of the
+      // filtered feed (matches CouchDB; documented filter=_view caveat).
+      final after = (await db
+              .changes(filter: ChangesFilter.view, view: 'viewtest/view1')
+              .first)
+          .normal!;
+      expect(after.results.map((r) => r.id), isNot(contains('biking')));
+      // the other matching documents remain
+      expect(after.results.map((r) => r.id), contains('bought-a-cat'));
+
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('continuous feed emits only matching documents', () async {
+      final dbName = 'testdb_viewfilter_cont';
+      final db = await cl.createDatabase(dbName);
+      await createView(db);
+
+      final received = <String>[];
+      final gotM2 = Completer<void>();
+      late StreamSubscription sub;
+      sub = db
+          .changes(
+            feedmode: FeedMode.continuous,
+            filter: ChangesFilter.view,
+            view: 'viewtest/view1',
+          )
+          .listen(
+            (ch) {
+              final id = ch.continuous?.id;
+              if (id == null) return;
+              received.add(id);
+              if (id == 'm2' && !gotM2.isCompleted) gotM2.complete();
+            },
+            onError: (e, s) {
+              if (!gotM2.isCompleted) gotM2.completeError(e, s);
+            },
+          );
+
+      // matching, non-matching, matching — written in seq order so that once
+      // m2 arrives we know n1's sequence was already processed (and filtered).
+      await db.put(
+        CouchDocumentBase(
+          id: 'm1',
+          unmappedProps: {'date': '2009/01/01', 'title': 'A'},
+        ),
+      );
+      await db.put(
+        CouchDocumentBase(id: 'n1', unmappedProps: {'foo': 'bar'}),
+      );
+      await db.put(
+        CouchDocumentBase(
+          id: 'm2',
+          unmappedProps: {'date': '2009/01/02', 'title': 'B'},
+        ),
+      );
+
+      await gotM2.future.timeout(const Duration(seconds: 10));
+
+      expect(received, contains('m1'));
+      expect(received, contains('m2'));
+      expect(received, isNot(contains('n1')));
+      expect(received, isNot(contains('_design/viewtest')));
+
+      await sub.cancel();
+      await cl.deleteDatabase(dbName);
+    });
   });
 
   test('revsDiff correctly handles deleted documents', () async {
