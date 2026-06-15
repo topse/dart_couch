@@ -1,6 +1,18 @@
 # DartCouchDB Project Guidelines
 
+This file shall contain:
+- requirements
+- decisions
+- open issues
+- Whatever is needed, to understand the principles of this library
+
+Especially it shall not contain:
+- History
+- Implementation details (use comments in source code for that)
+
 ## Project Overview
+
+In subfolder example we find an example App using this library. It is used for first line of user tests but one a single application using this general lib.
 
 **DartCouchDB** (`dart_couch`) is a **pure Dart** library (no Flutter SDK dependency) providing a CouchDB-compatible API interface with two implementations:
 
@@ -61,6 +73,32 @@ The library is a pure Dart package and can be used in CLI tools, servers, or any
 
 Tests require **Linux with Docker** installed. Most tests spin up a CouchDB container via Docker and cannot run on Windows or without Docker. Do not attempt to run tests in a Windows environment.
 
+### Test Logging
+
+Every test file's `main()` calls **`configureTestLogging()`** (in `test/helper/helper.dart`) once, before any `group`/`test`. Do not re-add per-file `Logger.root.onRecord` boilerplate.
+
+- **Default (quiet):** log records are buffered in memory and flushed to stdout **only for tests that fail**, under a `--- captured logs for failed test ---` banner. Passing runs stay silent. Failure detection covers both `expect()` mismatches (`Result.failure`) and uncaught/propagating exceptions (`Result.error`) via `Invoker.current.liveTest.state.result.isFailing` — consistent with the "don't catch exceptions in tests" rule (a propagating exception is reported as a failure and triggers the flush).
+- **Live (verbose):** prints every record as it happens. Enable with either:
+  - `flutter test --dart-define=ENABLE_LOGGING=true` (compile-time define)
+  - `ENABLE_LOGGING=1 dart test` (runtime env var)
+
+  Both are wired because `dart test` does **not** forward `--dart-define`, while `flutter test` does.
+
+Implementation notes: the flush runs in a global `tearDown` registered at the top of `main()` (outermost scope → runs last, after all other teardowns and after the pass/fail state is finalized). `tearDown` registrations stack, so tests/groups can still add their own. Accessing the result uses `package:test_api`'s internal `Invoker` (a direct `dev_dependency`, imported with `// ignore: implementation_imports`).
+
+### Parallel Test Execution
+
+Tests run in parallel (`dart_test.yaml` sets `concurrency: 4`). `dart test` runs each test *file* (suite) in its own isolate, so suites must not share mutable global resources. Isolation is achieved by:
+
+- **Self-allocated explicit ports.** `startCouchDb` (helper.dart) and `CouchTestManager._startCouchDb` pick a free host port themselves via `CouchTestManager.findFreePort()` and run the container with an **explicit** `-p <port>:5984` mapping. This is deliberate: Docker's `-p 0:5984` re-randomizes the host port on every `docker start`, which breaks pause/resume — a stopped-then-started container comes back on a *different* port while the long-lived `OfflineFirstServer` (and the URI polled by `_waitForCouchDb`) still point at the old, now-dead port. An explicit mapping is preserved across stop/start, so the port is stable for the container's lifetime. The port is stored in the per-suite top-level `couchPort`; use the `couchUri` getter (helper.dart) or `cm.uri` (CouchTestManager) instead of a hardcoded `http://localhost:5984`.
+  - `findFreePort()` binds an ephemeral socket (`bind(0)`) to get an OS-free port, **and** excludes every host port already claimed by any existing Docker container — running *or stopped* — read from each container's `HostConfig.PortBindings` via `docker ps -aq` + `docker inspect` (`_dockerReservedHostPorts`). `bind(0)` alone only proves a port is free *now*; a stopped container's mapping is invisible at the socket level, so without the exclusion a reused port would collide once both containers are (re)started. Excluding them keeps all test containers mutually restartable.
+  - A tiny window remains between releasing the socket and `docker run` binding the port (a concurrently-starting sibling's container doesn't exist yet, so it isn't in the reserved set). On that rare collision `docker run` fails loudly with "port is already allocated"; the start loop re-allocates a fresh port and retries (up to 5 times). A **pinned** port (see relogin below) must not move, so a collision there is a hard failure instead.
+- **Unique SQLite dirs.** `prepareSqliteDir()` / `CouchTestManager` use `Directory.systemTemp.createTempSync(...)` so every call gets a unique path. Drift/sqlite only conflicts when two opens hit the *same* file, so distinct paths keep suites isolated even within one process.
+- **Targeted cleanup only.** Each suite removes **only its own** container via `shutdownCouchDb` / `_shutdownCouchDb` (`docker stop` then `docker rm -fv <id>`), called from `tearDownAll` (`cm.dispose()`), `tearDownAllHttpFunction`, or a direct call. There is **no** global `docker container/volume prune` and **no** "kill all CouchDB containers" step — those destroy sibling suites' live containers. All test containers carry the `dart_couch_test` label; leftovers from crashed runs are cleaned by `tool/clean_test_containers.sh` (run manually, never from inside a suite).
+- **Offline / relogin tests.** Tests that simulate a *permanently* unreachable server (one that never comes back up) use `deadCouchUri()` — an OS-assigned free port with nothing listening. Tests that simulate **relogin** (server goes down then comes back at the *same* address) instead call `reserveCouchPort()`, which reserves the suite's port and points `couchUri` at it without starting a container (so `couchUri` is dead), then later `startCouchDb(..., port: couchPort)` brings the container up on that exact port — the same `couchUri` transitions dead → alive. Using two *different* URIs for the dead and alive phases would not actually exercise relogin. `proxy_login_test` reuses the freed CouchDB port for its nginx container so the server reconnects to the same address.
+
+**Rule:** never hardcode `http://localhost:5984` or a fixed SQLite path in a test, and never add a "stop all containers" call — both break parallel runs.
+
 ## Database Recreation Detection
 
 ### Marker-Based System
@@ -85,85 +123,95 @@ When recreation is detected via markers, ALL checkpoint types must be invalidate
 - `'_local/{db}::{db}::pull'`
 - `'_local/{db}::{db}::both'` ← Note: it's "both" not "bidirectional"
 
-## Recent Fixes
+## Conflict Handling
 
-### Sporadic Checkpoint Test Failure (2026-02-20)
-**Root causes:**
-1. Wrong checkpoint ID (`'bidirectional'` instead of `'both'`) prevented invalidation
-2. Unreliable heuristic (`< 10` threshold) caused race conditions
-3. Wrong fallback (using `sourceLastSeq` for missing `targetLastSeq`)
-4. **Infinite timer resets**: Rapid continuous changes kept cancelling checkpoint timer
+`LocalDartCouchDb` is a **faithful conflict replica** (Decision A2): it stores every
+leaf revision so it behaves identically to `HttpDartCouchDb` (= CouchDB) for
+conflicted documents. The reference spec is **`REPLICATION_AND_CONFLICT_MODEL.md`**
+(CouchDB's own "Replication and conflict model"); a per-clause compliance review
+lives in `PLAN.md` Phase 6. **Never resolve conflicts automatically inside the
+library** — CouchDB preserves conflicts and leaves resolution to the app, so the
+default behaviour is preserve (see NO HEURISTICS).
 
-**Fixes:**
-- `offline_first_server.dart:1653` - Fixed checkpoint ID to `'both'`
-- `replication_mixin.dart:_findCommonAncestry()` - Removed heuristic, changed fallback to `null`
-- `replication_mixin.dart:_scheduleCheckpoint()` - Added max delay (10s) to prevent infinite timer resets
-- Result: Deterministic checkpoint migration + guaranteed periodic saves
+### Storage model (additive side table)
+- The **winner** stays one row per `(fkdatabase, docid)` in `local_documents` — so
+  views, the changes feed, `seq`, and fast winner reads are unchanged.
+- **Non-winning leaf bodies** live in `local_conflict_revisions` (schema v5);
+  conflict-leaf **attachments** reference their leaf via `local_attachments.fkconflict`
+  (v6). One file per (leaf, attachment) in the shared `att/{PK}` namespace.
+- `_applyIncomingLeaf` (`local_dart_couch_db.dart`) does **leaf-set maintenance** for
+  every `newEdits:false` write (the three write paths — `bulkDocsRaw`, the multipart
+  main path, and the no-attachment batch path — all funnel through it). It uses the
+  incoming `_revisions` ancestry to distinguish a **linear supersede** (incoming is a
+  descendant → old rev becomes history) from a **sibling branch** (→ both are leaves
+  = a conflict). The write path strips `_revisions` early, so it is captured first.
 
-**Infinite Timer Reset Issue:**
-When continuous changes arrive rapidly, each calls `_scheduleCheckpoint()` which cancels and restarts the 5-second timer. This prevented checkpoint from ever being saved.
+### Winner selection (CouchDB-faithful, deterministic — same on all peers)
+A **linear descendant** supersedes unconditionally. Between **sibling** leaves:
+non-deleted beats deleted → higher generation → higher rev hash. Implemented in
+`_applyIncomingLeaf` step (d) and mirrored in `_promoteAfterTombstone`. Winner
+selection must NOT use app heuristics or random tie-breaking.
 
-**Solution:** Track `_lastCheckpointSaveTime` and force save after `_maxCheckpointDelay` (10s) regardless of new changes. This ensures checkpoints are saved at least every 10 seconds even during high-frequency replication.
+### Reads (full Http parity)
+- `get(conflicts:true)` / `deletedConflicts:true` / `meta:true` populate
+  `_conflicts` / `_deleted_conflicts` from the side table (omitted when empty).
+- `get(rev:X)` serves a conflict-leaf body; a compacted/bodyless leaf → `not_found`;
+  a deleted tombstone leaf → minimal `_deleted` doc.
+- `getOpenRevs` returns the full leaf set (winner + conflict leaves, deleted included)
+  as `{ok}` results; explicit missing revs → `missing`.
+- `revsDiff` unions side-table revs, so it is order-independent and does not
+  re-request known conflict leaves.
+- **Views** receive the winner **plus a `_conflicts` member** when the doc is in
+  conflict (Phase 6 — matches CouchDB; lets `function(doc){ if(doc._conflicts) … }`
+  locate conflicts). Injected in `view_ctrl._updateViewEntries` via
+  `AppDatabase.liveConflictRevsByDoc`. `_all_docs?conflicts=true` is ignored, as in
+  CouchDB.
 
-### Byte Reporting Progress Tracking (2026-02-20)
-**Root causes:**
-1. `_transferredBytes` was reset per batch while `_transferredDocs` accumulated across session → semantic mismatch
-2. `_totalBytesEstimate` only reflected current batch, not running total → nonsensical ratios like "706KB / 101KB"
-3. Estimate used `revs: false` while actual transfer used `revs: true` → missing revision history overhead (~1KB per edited document)
+### Tree changes bump `seq`; promotion; forwarding
+- ANY leaf-set change (add / supersede / tombstone a *losing* leaf) bumps the
+  document's `update_seq` via `AppDatabase.updateDocumentSeq`, even when the winner
+  row is untouched — CouchDB does this so the changes feed re-emits the doc (required
+  for resolution tombstones to push out, and for incremental view re-indexing).
+- Deleting the winning leaf promotes the best surviving leaf
+  (`_promoteAfterTombstone`).
+- **Local-as-source forwarding:** `changes(styleAllDocs)` advertises every leaf, and
+  `bulkGetMultipart` serves a requested conflict-leaf rev (with `_revisions` + its own
+  attachments) — so Local can push conflict branches to a remote.
 
-**Fixes:**
-- `replication_mixin.dart:862-887` - Changed byte tracking semantics:
-  - `_transferredBytes` now accumulates across entire session (like `_transferredDocs`)
-  - `_totalBytesEstimate` = already transferred + current batch estimate
-  - Small batches (< 5 docs) set estimate to null (UI won't show byte progress)
-- `replication_mixin.dart:_estimateDocSizes()` - Changed estimate fetch to use `revs: true` to match actual transfer
-- Result: Accurate byte reporting for documents with/without attachments, correct progress ratios
+### Bodyless (`not_found`) leaves
+A permanently compacted leaf (no body on the source) is recorded via
+`recordBodylessLeaf` as a `body == null` conflict leaf so `revsDiff` stops
+re-requesting it and `_conflicts` matches Http. Such leaves are **inherently
+permanent** (CouchDB keeps them too; only `_purge`, which does not replicate, removes
+them) — winner-selection / promotion skip them, `get(rev:)` returns `not_found`, and
+**the resolver must NOT tombstone them** (grafting a tombstone child does not collapse
+a compacted-body leaf and just causes churn).
 
-**Why revs matter:**
-CouchDB includes `_revisions` field when `revs: true`, containing the full revision tree. For frequently-edited documents, this adds ~1KB+ per document. The estimate must include this overhead to match actual transfer sizes.
-
-### Memory-Efficient Attachment Replication (2026-02-27, updated 2026-03-17)
-**Problem:** The replication producer-consumer pipeline used `bulkGetRaw(attachments: true)` which loaded all attachment data for an entire batch as base64-encoded JSON into memory before writing to the target. For documents with large attachments this caused significant memory pressure.
-
-**Fix:** Replaced `bulkGetRaw` + `bulkDocsRaw` with `bulkGetMultipart` + `bulkDocsFromMultipart` in both the batch replication path (`_streamingReplicate`) and the continuous replication path.
-
-**How it works:**
-- `bulkGetMultipart` streams one result per doc/rev. For HTTP source, each attachment part is eagerly drained to `Uint8List` before the result is yielded (peak memory = largest single attachment). For local source, results carry lazy file-backed streams.
-- `bulkDocsFromMultipart` on `LocalDartCouchDb` pipes each attachment stream directly to the `att/{id}` file — no base64 decode, no large in-memory buffer.
-- Size estimate in `_estimateDocSizes` now uses raw `length` (not `length * 4/3`) since multipart transfers raw bytes, not base64.
-- Removed dead code: `_AsyncSemaphore`, `_SemaphoreCancelled`, `_handleBulkDocsConflict` (which was already marked dead — `bulkDocs(newEdits: false)` never produces 409).
-
-### Per-Doc Immediate Write + Dual Pipeline (2026-03-17)
-**Problem:** `_streamingReplicate` collected all docs in a batch (5) before writing, holding all their attachments in memory simultaneously. Batches were processed strictly sequentially (fetch 5 → write 5 → fetch 5 → write 5), with no overlap between HTTP download and disk write. For initial sync of databases with many large attachments this was very slow.
-
-**Fix (per-doc immediate write):** Both `_streamingReplicate` and the continuous replication path (`_createChangeStream`) now write each document immediately as it arrives from the `bulkGetMultipart` stream, instead of collecting all docs first. Peak memory = one doc's attachments at a time. The `processedKeys` set is updated AFTER successful write so that on stream error the fallback loop can retry unwritten docs.
-
-**Fix (dual pipeline):** `_streamingReplicate` now uses two concurrent HTTP pipelines feeding a merge queue (`StreamController<_PipelineResult>`). Each pipeline takes groups of 3 docs from a shared index, fetches via `bulkGetMultipart`, and forwards results to the merge queue. A single consumer writes each doc immediately. While one pipeline's doc is being written to disk, the other pipeline downloads the next batch — overlapping HTTP I/O with disk I/O.
-
-**Key design decisions:**
-- Adaptive batch sizing via `_buildAdaptiveGroups()`: groups are capped at 1 MB / 50 docs. Small docs (no attachments) get batched 50 together for fewer HTTP round trips; large docs (with attachments) naturally form small groups for low peak memory. Size estimates from `_estimateDocSizes()` drive the grouping.
-- `processedKeys.add()` moved AFTER `bulkDocsFromMultipart()` succeeds, not before — ensures failed writes are retried in the fallback path
-- Continuous replication path does NOT use dual pipelines (processes one change event at a time via pause/resume backpressure)
-- The `_PipelineResult` class wraps results with their source group and error state for the consumer
-- `http.Client` supports concurrent requests via internal connection pooling; no second client needed
-- Per-pipeline byte tracking via `pipelineAccumulatedBytes[]` array. Each pipeline tracks cumulative bytes across all its groups (not just current HTTP response). Avoids concurrent overwrite between pipelines (see "Dual Pipeline Byte Tracking Fix" below).
-
-### Dual Pipeline Byte Tracking, Progress Counters, and Adaptive Batching (2026-03-18)
-**Problems:**
-1. **Byte tracking race:** Each pipeline captured `bytesBeforeBatch = _transferredBytes` then set `_transferredBytes = bytesBeforeBatch + bytes`. When both pipelines ran concurrently, one pipeline's `onBytesReceived` callback overwrote the other's contribution, causing bytes to jump backward or stall. Additionally, `onBytesReceived(bytes)` reports cumulative bytes per HTTP response (resets to 0 for each new `_bulk_get` call), so when a pipeline moved to its next group, the previous group's bytes were lost.
-2. **Counter double-decrement:** `_fetchAndWriteIndividual` did `_docsFetching--; _docsFetchComplete++`, and the outer consumer loop did the same. Fallback paths called `_fetchAndWriteIndividual` then fell through to the outer update — double-decrementing `_docsFetching` into negative values, breaking progress display.
-3. **Missing counter in continuous path:** When `_normalizeReplicationDoc` returned null in the continuous path, the code did `continue` without updating `_docsFetching--` / `_docsFetchComplete++`, stalling progress.
-4. **Stale `_sourceSeq` after pull / lost local writes (2026-04-13):** In bidirectional mode, push one-shot set `_sourceSeq = 1-dummyhash` (local was empty). Pull one-shot then wrote N docs locally. Push continuous started from `1-dummyhash`, re-processing all N just-pulled docs through revsDiff (all returning "nothing to write"). The initial fix (setting `_sourceSeq = source.info().updateSeq`) introduced a worse bug: documents written locally *during* pull (e.g. device-identity docs) had a sequence below `updateSeq` and were permanently skipped by push — never reaching the remote.
-5. **Fixed batch size too small for small docs:** `producerBatchSize = 3` meant ~217 HTTP round trips for 649 small shopping-list docs. The small batch size was chosen for memory with large attachments, but most docs were tiny.
-
-**Fixes:**
-- `replication_mixin.dart:_streamingReplicate()` — Replaced per-pipeline `bytesBeforeBatch` with `pipelineAccumulatedBytes[]` array that accumulates across groups. Each pipeline tracks `baseForThisGroup` before starting a new HTTP request, then adds the per-response cumulative bytes on top. `_transferredBytes = bytesBeforeStreaming + sum(pipelineAccumulatedBytes)`. Removed `streamingBytesTracked` from `_PipelineResult`.
-- `replication_mixin.dart:_buildAdaptiveGroups()` — New method replaces fixed `producerBatchSize`. Uses per-doc size estimates from `_estimateDocSizes()` to group docs: target 1 MB per group, max 50 docs per group, fallback to 20 docs when no estimates available. Small docs batch together for fewer HTTP round trips; large docs form small groups for low peak memory.
-- `replication_mixin.dart:_streamingReplicate()` consumer — Docs without attachments are collected into a write batch and flushed in a single `bulkDocsFromMultipart()` call (up to 50 docs per batch = one SQLite transaction). Docs with attachments are still written immediately to keep peak memory low. This batching applies to both the HTTP fetch grouping (adaptive groups) and the write path (write batches).
-- `replication_mixin.dart:_fetchAndWriteIndividual()` — Removed counter updates. Counter updates now happen only in the caller.
-- `replication_mixin.dart:_createChangeStream()` — Added `_docsFetching--; _docsFetchComplete++` before `continue` in the malformed doc path.
-- `replication_mixin.dart:_run()` — After both one-shot directions complete in bidirectional mode, a **post-pull push one-shot** runs from the original push `_sourceSeq`. This advances `_sourceSeq` past all pulled docs (via `revsDiff` filtering — pulled docs are "not missing" on remote) while also catching and pushing any documents written locally during the pull. Replaces the previous `source.info().updateSeq` approach which silently dropped local writes.
-- `http_dart_couch_db.dart:_parseRelatedOuterPart()` — Added diagnostic logging for unexpected doc structures in multipart parsing fallback paths (helps diagnose "malformed bulk_get" errors).
+### Resolution (opt-in, separate phase — never mixed into raw transfer)
+- API in `replication_mixin_interface.dart`: `DocumentConflictResolver.resolve(
+  ConflictedDocument) → CouchDocumentBase?`. Default **no resolver = preserve**;
+  opt-in `KeepWinnerResolver` (deterministic last-writer-wins). Threaded through
+  `syncTo(resolver:)` → controller → `OfflineFirstDb`/`OfflineFirstServer` (nullable,
+  default `null` — wiring a non-null default would impose a library policy).
+  **Resolvers MUST be deterministic AND stable** (same inputs → same survivor, and
+  resolving a partial leaf set converges to the same result as the whole set).
+- Runs as a **caught-up sweep** (`_resolveCaughtUpConflicts` / `_maybeResolveConflict`
+  in `replication_mixin.dart`): after the initial bidirectional one-shot and whenever
+  continuous settles to `pending == 0`, so the replica holds the COMPLETE leaf set —
+  **never per-change mid-stream**. Discovery is a cheap LOCAL conflict index
+  (`LocalConflictSource.conflictedDocIds`, in `conflict_resolution_internal.dart` —
+  **non-exported / not public API**, no remote scan).
+- Mechanism: `putRaw(survivor)` as a child of the winner + a deterministic
+  `newEdits:false` tombstone per *fetchable* losing leaf. `KeepWinnerResolver` skips
+  the put (tombstones losers only → winner + its attachments preserved); a merged
+  survivor on an attachment-carrying doc is skipped+warned (putRaw carries no
+  attachment bodies). Results replicate out via normal push.
+- **Data safety is independent of resolver correctness:** per-document isolation +
+  preserve-on-failure (a throw / write error / crash leaves THAT doc conflicted and
+  retried — never aborts the sweep or corrupts state), a tombstone hits only the exact
+  losing rev (a concurrent descendant survives), writes are local-first + resumable,
+  and there is **no heuristic circuit-breaker**. Worst case of a bad/non-deterministic
+  resolver is churn, never lost/corrupt data.
 
 ## Local Attachment Storage
 
@@ -239,7 +287,9 @@ This pattern is applied in `LocalDartCouchDb._internalRemove` and the `deleted=t
 - **v1**: `attachment_blobs` table stored binary data inline in SQLite.
 - **v2**: `attachment_blobs` dropped; data stored as files. The v1→v2 migration drops the table and its `delete_attachment_blob_before_attachment` trigger. Existing blob data is intentionally discarded (local DB is a cache).
 - **v3**: `local_attachments.encoding` nullable text column added. Stores the CouchDB content-encoding (e.g. `'gzip'`) when an attachment was compressed by CouchDB. `null` for locally-created attachments. Migration: `ALTER TABLE local_attachments ADD COLUMN encoding TEXT`.
-- **v4** (current): `local_documents.docid` changed from globally UNIQUE to unique per `(fkdatabase, docid)`. Migration: table recreation with `PRAGMA foreign_keys = OFF`.
+- **v4**: `local_documents.docid` changed from globally UNIQUE to unique per `(fkdatabase, docid)`. Migration: table recreation with `PRAGMA foreign_keys = OFF`.
+- **v5**: `local_conflict_revisions` table added (`id, fkdocument → local_documents(id), rev, version, deleted, body`) to store **non-winning conflict-leaf bodies** (faithful conflict storage — Decision A2; see "Conflict Handling" below). Indexes on `fkdocument` and unique `(fkdocument, rev)`; a `delete_conflict_revisions_before_delete_document` BEFORE-DELETE trigger cascades row cleanup so deleting a document/database leaves no orphaned conflict rows. Migration: `CREATE TABLE` + indexes + trigger.
+- **v6** (current): `local_attachments.fkconflict` nullable column added (`REFERENCES local_conflict_revisions(id)`) for **conflict-leaf attachment bodies**. `null` = a winner attachment (unchanged behaviour); non-null points at the owning conflict leaf. The `cleanup_attachments_on_tombstone` trigger is scoped to winner attachments (`fkconflict IS NULL`) so a surviving leaf keeps its attachments for promotion, and a new `delete_conflict_attachments_before_conflict_revision` trigger drops a leaf's attachment rows when its conflict row is deleted (files cleaned by the Dart layer + the Phase-2 orphan scan). Migration: `ALTER TABLE … ADD COLUMN fkconflict` + index + trigger changes.
 - **Web-only**: `attachment_blobs_web` table created at runtime by `WebAttachmentStorage.initialize()` — not part of the Drift schema or migration versioning.
 
 ## CouchDB Attachment Compression
@@ -378,24 +428,18 @@ This is a monorepo with two packages:
 
 The core package uses `DcValueNotifier` / `DcValueListenable` (in `lib/src/value_notifier.dart`) as pure-Dart replacements for Flutter's `ValueNotifier` / `ValueListenable`. The widget package provides `DcValueListenableBuilder` to bridge these into Flutter's widget tree.
 
-## Open Issues
-
-### Sporadic Blank Screen on App Startup (2026-03-30, fixed 2026-04-02)
-
-**Symptom:** The example app occasionally shows a completely blank grey screen on startup (no AppBar, no spinner, no progress bar). Reported on Android under poor network conditions.
-
-**First partial fix (2026-03-30):** `HttpDartCouchServer.login()` had a generic `catch (e)` that rethrew unexpected exceptions (e.g. `HandshakeException`, `FormatException` from truncated responses). This left `OfflineFirstServer` stuck in `tryingToConnect` state permanently. Fixed by returning `null` (network error) instead of rethrowing, matching the `ClientException` and `TimeoutException` handlers.
-
-**Root cause identified (2026-04-02):** When a reverse proxy (e.g. Synology NAS) intercepts the `/_session` request and returns an HTML error page (non-200 status, HTML body), `HttpDartCouchServer.login()` treated this as `wrongCredentials` instead of a network error. The causal chain:
-1. Proxy returns HTML "page not found" page instead of CouchDB JSON
-2. `login()` returns `LoginResult(success: false)` (wrongCredentials)
-3. `OfflineFirstServer.loginWithReloginFlag()` correctly goes to `normalOffline` (cached credentials exist) but returns `success: false`
-4. `DbStateProxyWidget._handleLogin()` sees `success: false` and skips the `onLogin` callback
-5. `onLogin` is where the example app registers `di.registerSingleton<OfflineFirstDb>(db)`
-6. `MyHomePage.build()` calls `di<OfflineFirstDb>()` which throws (not registered)
-7. In release mode, `ErrorWidget` renders as `SizedBox.shrink()` — grey screen
-
-**Fix:** `http_dart_couch_server.dart:login()` now detects non-JSON responses (checks `content-type` header and whether body starts with `{`) and treats them as network errors (`loginFailedWithNetworkError`, returns `null`) instead of wrong credentials. This way, `OfflineFirstServer.loginWithReloginFlag()` takes the `res == null` path and returns `LoginResult(success: true)` when cached credentials exist, ensuring the `onLogin` callback fires.
+## Login error classification (requirement)
+`HttpDartCouchServer.login()` MUST classify a non-JSON / non-CouchDB response
+(e.g. a reverse proxy returning an HTML error page, or a truncated/garbled body)
+as a **network error** (`loginFailedWithNetworkError`, returns `null`) — NOT as
+`wrongCredentials`. Treating it as wrong credentials makes `OfflineFirstServer`
+skip the `onLogin` callback even though cached credentials exist, which can leave
+an offline-capable app stuck (historically a blank screen). Network-error
+classification lets `loginWithReloginFlag()` fall back to cached credentials and
+fire `onLogin`.
 
 ## CouchDB Protocol Compliance
 Follow CouchDB's replication protocol - it doesn't use heuristics, neither should we.
+The conflict model we mirror is documented in **`REPLICATION_AND_CONFLICT_MODEL.md`**
+(CouchDB's own spec); see the "Conflict Handling" section above and `PLAN.md` Phase 6
+for the per-clause compliance review.

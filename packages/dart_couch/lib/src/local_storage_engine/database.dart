@@ -75,6 +75,48 @@ class RevisionHistories extends Table {
   late final BoolColumn deleted = boolean().nullable()();
 }
 
+/// Non-winning conflict **leaf** revisions of a document (Decision A2 in
+/// PLAN.md). The single *winning* leaf lives in [LocalDocuments] /
+/// [DocumentBlobs] as before; every other live leaf of the same document is
+/// stored here with its body, so `LocalDartCouchDb` is a faithful replica:
+/// `get(conflicts:true)`, `get(rev:X)` and `getOpenRevs` match CouchDB.
+///
+/// **Cascade / no-orphans:** [fkdocument] points at the document's stable
+/// [LocalDocuments] row id (unchanged across winner promotion, since the winner
+/// row is updated in place). A `BEFORE DELETE ON local_documents` trigger
+/// deletes the matching rows here, so deleting a document — or a database, which
+/// cascades to its documents — leaves no orphaned conflict rows. The body is an
+/// inline column, so it is removed together with the row (no separate blob
+/// table to clean up). Conflict-leaf *attachment files* (Stage 2) are NOT
+/// covered by SQL triggers and must be cleaned by the Dart layer.
+@TableIndex(
+  name: 'local_conflict_revisions_fkdocument_index',
+  columns: {#fkdocument},
+)
+@TableIndex(
+  name: 'local_conflict_revisions_fkdocument_rev',
+  columns: {#fkdocument, #rev},
+  unique: true,
+)
+class LocalConflictRevisions extends Table {
+  late final IntColumn id = integer().autoIncrement()();
+
+  /// The (stable) [LocalDocuments] row id this conflict leaf belongs to.
+  late final IntColumn fkdocument = integer().references(LocalDocuments, #id)();
+
+  /// Full revision id of this leaf, e.g. "2-abcdef…".
+  late final TextColumn rev = text()();
+
+  /// Generation number (the "N" in "N-hash"), stored for sorting/winner calc.
+  late final IntColumn version = integer()();
+
+  late final BoolColumn deleted = boolean().nullable()();
+
+  /// Stored document body (JSON, with `_attachments` stripped — handled like
+  /// the winner blob). Null for a deleted (tombstone) conflict leaf.
+  late final TextColumn body = text().nullable()();
+}
+
 /// Attachment metadata table.
 ///
 /// **Binary data is NOT stored here.** Each row records only the metadata for
@@ -98,6 +140,7 @@ class RevisionHistories extends Table {
 @TableIndex(name: 'local_attachments_name_index', columns: {#name})
 @TableIndex(name: 'local_attachments_revpos_index', columns: {#revpos})
 @TableIndex(name: 'local_attachments_fkdocument_index', columns: {#fkdocument})
+@TableIndex(name: 'local_attachments_fkconflict_index', columns: {#fkconflict})
 class LocalAttachments extends Table {
   /// Integer primary key — also used as the filename in `att/`.
   late final IntColumn id = integer().autoIncrement()();
@@ -138,6 +181,23 @@ class LocalAttachments extends Table {
   /// `att/{id}` file holds the decompressed content. This matches CouchDB's
   /// `encoding` field returned with `att_encoding_info=true`.
   late final TextColumn encoding = text().nullable()();
+
+  /// When non-null, this attachment belongs to a **non-winning conflict leaf**
+  /// (the referenced [LocalConflictRevisions] row id) rather than to the
+  /// winning revision. Winner attachments have `fkconflict == null` and behave
+  /// exactly as before (PLAN.md Phase 1 Stage 2 / Decision A2).
+  ///
+  /// [fkdocument] is still set on conflict-leaf attachments (to the owning
+  /// document row), so the `delete_attachments_before_document` BEFORE-DELETE
+  /// trigger cleans them on document/database hard-delete. The
+  /// `cleanup_attachments_on_tombstone` trigger is scoped to `fkconflict IS
+  /// NULL` so tombstoning the winner does NOT drop conflict-leaf attachments —
+  /// a surviving leaf may be promoted to winner and needs them. Deleting a
+  /// conflict-leaf row drops its attachment rows via
+  /// `delete_conflict_attachments_before_conflict_revision`; the Dart layer
+  /// deletes the files (triggers cannot touch the filesystem).
+  late final IntColumn fkconflict =
+      integer().nullable().references(LocalConflictRevisions, #id)();
 }
 
 @TableIndex(name: 'local_view_view_path_short_index', columns: {#viewPathShort})
@@ -185,6 +245,7 @@ class LocalDocumentWithBlob {
     LocalDocuments,
     DocumentBlobs,
     RevisionHistories,
+    LocalConflictRevisions,
     LocalAttachments,
     LocalViews,
     LocalViewEntries,
@@ -198,7 +259,7 @@ class AppDatabase extends _$AppDatabase {
   AppDatabase(super.executor);
 
   @override
-  int get schemaVersion => 4;
+  int get schemaVersion => 6;
 
   @override
   MigrationStrategy get migration {
@@ -240,12 +301,29 @@ class AppDatabase extends _$AppDatabase {
         // IMPORTANT: these triggers cannot delete attachment *files* (SQLite has
         // no filesystem access). File deletion is the responsibility of the Dart
         // layer. See the tombstone caveat in the [LocalAttachments] class doc.
+        // Only the WINNER's attachments (fkconflict IS NULL) are removed on
+        // tombstone. Conflict-leaf attachments (fkconflict NOT NULL) must
+        // survive — a surviving leaf may be promoted to winner. See
+        // [LocalAttachments.fkconflict] (PLAN.md Phase 1 Stage 2).
         await customStatement('''
           CREATE TRIGGER cleanup_attachments_on_tombstone
           AFTER UPDATE ON local_documents
           WHEN NEW.deleted = 1 AND COALESCE(OLD.deleted, 0) = 0
           BEGIN
-            DELETE FROM local_attachments WHERE fkdocument = NEW.id;
+            DELETE FROM local_attachments
+            WHERE fkdocument = NEW.id AND fkconflict IS NULL;
+          END;
+        ''');
+
+        // Drop a conflict leaf's attachment rows when the leaf row is deleted
+        // (supersession, promotion, or document delete). Files are removed by
+        // the Dart layer (triggers cannot touch the filesystem).
+        await customStatement('''
+          CREATE TRIGGER delete_conflict_attachments_before_conflict_revision
+          BEFORE DELETE ON local_conflict_revisions
+          FOR EACH ROW
+          BEGIN
+            DELETE FROM local_attachments WHERE fkconflict = OLD.id;
           END;
         ''');
 
@@ -285,6 +363,18 @@ class AppDatabase extends _$AppDatabase {
           FOR EACH ROW
           BEGIN
             DELETE FROM revision_histories WHERE fkdocument = OLD.id;
+          END;
+        ''');
+
+        // Cascade conflict-leaf rows when their owning document row is deleted
+        // (directly, or via the database-delete cascade). Prevents orphaned
+        // local_conflict_revisions rows. See [LocalConflictRevisions].
+        await customStatement('''
+          CREATE TRIGGER delete_conflict_revisions_before_delete_document
+          BEFORE DELETE ON local_documents
+          FOR EACH ROW
+          BEGIN
+            DELETE FROM local_conflict_revisions WHERE fkdocument = OLD.id;
           END;
         ''');
 
@@ -423,6 +513,71 @@ class AppDatabase extends _$AppDatabase {
 
           await customStatement('PRAGMA foreign_keys = ON');
         }
+        if (from < 5) {
+          // v4 → v5: add local_conflict_revisions (non-winning conflict leaf
+          // bodies, PLAN.md Decision A2) and its cascade trigger so deleting a
+          // document/database leaves no orphaned conflict rows.
+          await customStatement('''
+            CREATE TABLE local_conflict_revisions (
+              id INTEGER PRIMARY KEY AUTOINCREMENT NOT NULL,
+              fkdocument INTEGER NOT NULL REFERENCES local_documents(id),
+              rev TEXT NOT NULL,
+              version INTEGER NOT NULL,
+              deleted INTEGER,
+              body TEXT
+            )
+          ''');
+          await customStatement(
+            'CREATE INDEX local_conflict_revisions_fkdocument_index '
+            'ON local_conflict_revisions (fkdocument)',
+          );
+          await customStatement(
+            'CREATE UNIQUE INDEX local_conflict_revisions_fkdocument_rev '
+            'ON local_conflict_revisions (fkdocument, rev)',
+          );
+          await customStatement('''
+            CREATE TRIGGER delete_conflict_revisions_before_delete_document
+            BEFORE DELETE ON local_documents
+            FOR EACH ROW
+            BEGIN
+              DELETE FROM local_conflict_revisions WHERE fkdocument = OLD.id;
+            END
+          ''');
+        }
+        if (from < 6) {
+          // v5 → v6: conflict-leaf attachment bodies (PLAN.md Phase 1 Stage 2).
+          // Add local_attachments.fkconflict (NULL = winner attachment), scope
+          // the tombstone-cleanup trigger to winner attachments only, and add a
+          // BEFORE-DELETE trigger that drops a conflict leaf's attachment rows.
+          await customStatement(
+            'ALTER TABLE local_attachments ADD COLUMN fkconflict INTEGER '
+            'REFERENCES local_conflict_revisions(id)',
+          );
+          await customStatement(
+            'CREATE INDEX local_attachments_fkconflict_index '
+            'ON local_attachments (fkconflict)',
+          );
+          await customStatement(
+            'DROP TRIGGER IF EXISTS cleanup_attachments_on_tombstone',
+          );
+          await customStatement('''
+            CREATE TRIGGER cleanup_attachments_on_tombstone
+            AFTER UPDATE ON local_documents
+            WHEN NEW.deleted = 1 AND COALESCE(OLD.deleted, 0) = 0
+            BEGIN
+              DELETE FROM local_attachments
+              WHERE fkdocument = NEW.id AND fkconflict IS NULL;
+            END;
+          ''');
+          await customStatement('''
+            CREATE TRIGGER delete_conflict_attachments_before_conflict_revision
+            BEFORE DELETE ON local_conflict_revisions
+            FOR EACH ROW
+            BEGIN
+              DELETE FROM local_attachments WHERE fkconflict = OLD.id;
+            END;
+          ''');
+        }
       },
       beforeOpen: (details) async {
         await customStatement('PRAGMA foreign_keys = ON');
@@ -448,6 +603,158 @@ class AppDatabase extends _$AppDatabase {
     }
 
     return (delete(localDatabases)..where((tbl) => tbl.id.equals(db.id))).go();
+  }
+
+  // --- Conflict leaf accessors (Decision A2 in PLAN.md) --------------------
+  // Live in AppDatabase because compound `where` uses drift's `&` operator,
+  // which is only in scope where `package:drift/drift.dart` is fully imported
+  // (local_dart_couch_db.dart imports it with `show Value`).
+
+  /// All non-winning conflict leaf rows for the document row [docRowId].
+  Future<List<LocalConflictRevision>> getConflictRevisions(int docRowId) {
+    return (select(
+      localConflictRevisions,
+    )..where((t) => t.fkdocument.equals(docRowId))).get();
+  }
+
+  /// Ids of documents in [dbid] that currently have at least one **live**
+  /// (non-deleted) conflict leaf — i.e. are in conflict (CouchDB's `_conflicts`).
+  ///
+  /// Indexed, memory-light (ids only, no bodies, no full-table scan): joins the
+  /// conflict side-table to its documents. Used by opt-in resolution to do a
+  /// "complete run" after the initial sync without downloading or scanning the
+  /// whole database (PLAN.md Phase 2).
+  Future<List<String>> conflictedDocIds(int dbid) async {
+    final rows = await customSelect(
+      'SELECT DISTINCT d.docid AS docid '
+      'FROM local_conflict_revisions c '
+      'JOIN local_documents d ON d.id = c.fkdocument '
+      'WHERE d.fkdatabase = ? AND COALESCE(c.deleted, 0) = 0',
+      variables: [Variable.withInt(dbid)],
+      readsFrom: {localConflictRevisions, localDocuments},
+    ).get();
+    return rows.map((r) => r.read<String>('docid')).toList();
+  }
+
+  /// All conflict-leaf revs in [dbid], grouped by document row id.
+  ///
+  /// One query for the whole changes-feed batch so a `style=all_docs` feed can
+  /// advertise every leaf (winner + conflict leaves) without a per-document
+  /// round trip (PLAN.md Phase 1 Stage 3 — lets Local act as a faithful
+  /// replication *source* for conflicted documents). The conflict side-table
+  /// only holds losing leaves (rare), so fetching it whole is cheap and avoids
+  /// SQLite's bound-variable limit that an `IN (...)` over many doc ids would
+  /// hit on a large feed.
+  Future<Map<int, List<String>>> conflictRevsByDoc(int dbid) async {
+    final rows = await customSelect(
+      'SELECT c.fkdocument AS fkdocument, c.rev AS rev '
+      'FROM local_conflict_revisions c '
+      'JOIN local_documents d ON d.id = c.fkdocument '
+      'WHERE d.fkdatabase = ?',
+      variables: [Variable.withInt(dbid)],
+      readsFrom: {localConflictRevisions, localDocuments},
+    ).get();
+    final map = <int, List<String>>{};
+    for (final r in rows) {
+      (map[r.read<int>('fkdocument')] ??= <String>[]).add(r.read<String>('rev'));
+    }
+    return map;
+  }
+
+  /// **Live** (non-deleted) conflict-leaf revs in [dbid], grouped by document
+  /// row id — i.e. the exact contents of each conflicted document's
+  /// `_conflicts` member.
+  ///
+  /// Used by view indexing to feed the winner doc **plus a `_conflicts` member**
+  /// to the map function for conflicted documents, matching CouchDB ("Views only
+  /// get the winning revision … However, they do also get a `_conflicts` member
+  /// if there are any conflicting revisions"). One batch query for the whole
+  /// index pass; the side-table only holds losing leaves (rare), so it is cheap
+  /// (same reasoning as [conflictRevsByDoc]). Deleted leaves are excluded — they
+  /// belong to `_deleted_conflicts`, which views do not receive.
+  Future<Map<int, List<String>>> liveConflictRevsByDoc(int dbid) async {
+    final rows = await customSelect(
+      'SELECT c.fkdocument AS fkdocument, c.rev AS rev '
+      'FROM local_conflict_revisions c '
+      'JOIN local_documents d ON d.id = c.fkdocument '
+      'WHERE d.fkdatabase = ? AND COALESCE(c.deleted, 0) = 0',
+      variables: [Variable.withInt(dbid)],
+      readsFrom: {localConflictRevisions, localDocuments},
+    ).get();
+    final map = <int, List<String>>{};
+    for (final r in rows) {
+      (map[r.read<int>('fkdocument')] ??= <String>[]).add(r.read<String>('rev'));
+    }
+    return map;
+  }
+
+  /// Inserts a conflict leaf, replacing any existing row for the same
+  /// (document, rev) — idempotent. Returns the new row id (used as the
+  /// `fkconflict` for that leaf's attachments in Stage 2). The replace deletes
+  /// any prior row, which (via `delete_conflict_attachments_before_conflict_revision`)
+  /// drops its stale attachment rows; the caller deletes the files.
+  Future<int> putConflictRevision({
+    required int docRowId,
+    required String rev,
+    required int version,
+    required bool deleted,
+    required String? body,
+  }) async {
+    await (delete(localConflictRevisions)..where(
+          (t) => t.fkdocument.equals(docRowId) & t.rev.equals(rev),
+        ))
+        .go();
+    return into(localConflictRevisions).insert(
+      LocalConflictRevisionsCompanion.insert(
+        fkdocument: docRowId,
+        rev: rev,
+        version: version,
+        deleted: Value(deleted),
+        body: Value(body),
+      ),
+    );
+  }
+
+  /// Bumps only the update [seq] of an existing document row, leaving its
+  /// winner rev / body / deleted flag untouched.
+  ///
+  /// Used when the revision tree changed via a conflict-leaf add / supersede /
+  /// tombstone while the **winner row stayed the same** (PLAN.md Phase 2).
+  /// CouchDB advances a document's update_seq for ANY tree change so the changes
+  /// feed re-emits it; mirroring that here is what lets opt-in conflict
+  /// resolution (which tombstones a *losing* leaf) propagate to the remote via
+  /// the normal push changes feed. Must run inside a `db.transaction()`.
+  Future<void> updateDocumentSeq(int docRowId, int seq) async {
+    await (update(localDocuments)..where((t) => t.id.equals(docRowId))).write(
+      LocalDocumentsCompanion(seq: Value(seq)),
+    );
+  }
+
+  /// Removes the conflict leaf [rev] of document row [docRowId] (e.g. when an
+  /// incoming revision supersedes it, or it is promoted to winner).
+  Future<void> deleteConflictRevision(int docRowId, String rev) async {
+    await (delete(localConflictRevisions)..where(
+          (t) => t.fkdocument.equals(docRowId) & t.rev.equals(rev),
+        ))
+        .go();
+  }
+
+  /// Deletes every [RevisionHistories] row of document row [docRowId].
+  ///
+  /// The history table is an append-only log fed by the
+  /// `update_revision_history_after_*_document` triggers, so it always grows
+  /// toward higher generations. Winner *promotion* (after the winning leaf is
+  /// tombstoned) breaks that monotonicity: the new winner is a surviving leaf
+  /// whose generation may be *below* the tombstone's, leaving a stale
+  /// higher-version row at the head of the version-sorted history that no longer
+  /// matches the winner. Clearing the rows here (the next winner-row write
+  /// re-seeds the head via the trigger) keeps the promoted document's history
+  /// consistent — identical in shape to a freshly written document. Must run
+  /// inside a `db.transaction()`.
+  Future<void> clearRevisionHistory(int docRowId) async {
+    await (delete(
+      revisionHistories,
+    )..where((t) => t.fkdocument.equals(docRowId))).go();
   }
 
   Future<LocalDocumentWithBlob?> getDocument(
@@ -621,12 +928,17 @@ class AppDatabase extends _$AppDatabase {
     }
   }
 
-  /// finds all attachments for a document
+  /// finds all **winner** attachments for a document (`fkconflict IS NULL`).
   /// can be filtered for document names
   /// gets only metadata, not the blob data
+  ///
+  /// Conflict-leaf attachments (`fkconflict NOT NULL`) are excluded — use
+  /// [getConflictAttachments]. Scoping to the winner is required now that a
+  /// conflict leaf can carry an attachment with the same name as the winner
+  /// (PLAN.md Phase 1 Stage 2).
   Future<List<LocalAttachment>> getAttachments(int dbdocid) {
     return (select(localAttachments)
-          ..where((tbl) => tbl.fkdocument.equals(dbdocid))
+          ..where((tbl) => tbl.fkdocument.equals(dbdocid) & tbl.fkconflict.isNull())
           ..orderBy([(tbl) => OrderingTerm(expression: tbl.ordering)]))
         .get();
   }
@@ -634,10 +946,55 @@ class AppDatabase extends _$AppDatabase {
   Future<LocalAttachment?> getAttachment(int dbdocid, String name) {
     return (select(localAttachments)
           ..where(
-            (tbl) => tbl.fkdocument.equals(dbdocid) & tbl.name.equals(name),
+            (tbl) =>
+                tbl.fkdocument.equals(dbdocid) &
+                tbl.name.equals(name) &
+                tbl.fkconflict.isNull(),
           )
           ..orderBy([(tbl) => OrderingTerm(expression: tbl.ordering)]))
         .getSingleOrNull();
+  }
+
+  /// All attachment metadata rows of one **conflict leaf** (Stage 2).
+  Future<List<LocalAttachment>> getConflictAttachments(int conflictRowId) {
+    return (select(localAttachments)
+          ..where((tbl) => tbl.fkconflict.equals(conflictRowId))
+          ..orderBy([(tbl) => OrderingTerm(expression: tbl.ordering)]))
+        .get();
+  }
+
+  /// One named attachment of a conflict leaf, or null (Stage 2).
+  Future<LocalAttachment?> getConflictAttachment(
+    int conflictRowId,
+    String name,
+  ) {
+    return (select(localAttachments)
+          ..where(
+            (tbl) =>
+                tbl.fkconflict.equals(conflictRowId) & tbl.name.equals(name),
+          )
+          ..orderBy([(tbl) => OrderingTerm(expression: tbl.ordering)]))
+        .getSingleOrNull();
+  }
+
+  /// Promotes a conflict leaf's attachments to the winner: clears `fkconflict`
+  /// on all rows pointing at [conflictRowId]. Files keep their `att/{PK}` name,
+  /// so this is metadata-only. Used by winner promotion (Stage 2).
+  Future<void> promoteConflictAttachments(int conflictRowId) async {
+    await (update(localAttachments)
+          ..where((tbl) => tbl.fkconflict.equals(conflictRowId)))
+        .write(const LocalAttachmentsCompanion(fkconflict: Value(null)));
+  }
+
+  /// Demotes the current winner's attachments of document [dbdocid] to the
+  /// conflict leaf [toConflictId]: sets `fkconflict = toConflictId` on the
+  /// winner rows (`fkconflict IS NULL`). Metadata-only. Used when an incoming
+  /// sibling wins and the old (live) winner becomes a conflict leaf (Stage 2).
+  Future<void> demoteWinnerAttachments(int dbdocid, int toConflictId) async {
+    await (update(localAttachments)..where(
+          (tbl) => tbl.fkdocument.equals(dbdocid) & tbl.fkconflict.isNull(),
+        ))
+        .write(LocalAttachmentsCompanion(fkconflict: Value(toConflictId)));
   }
 
   /// Returns all attachment metadata rows across all databases.

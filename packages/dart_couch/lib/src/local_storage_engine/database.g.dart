@@ -1332,6 +1332,422 @@ class RevisionHistoriesCompanion extends UpdateCompanion<RevisionHistory> {
   }
 }
 
+class $LocalConflictRevisionsTable extends LocalConflictRevisions
+    with TableInfo<$LocalConflictRevisionsTable, LocalConflictRevision> {
+  @override
+  final GeneratedDatabase attachedDatabase;
+  final String? _alias;
+  $LocalConflictRevisionsTable(this.attachedDatabase, [this._alias]);
+  static const VerificationMeta _idMeta = const VerificationMeta('id');
+  @override
+  late final GeneratedColumn<int> id = GeneratedColumn<int>(
+    'id',
+    aliasedName,
+    false,
+    hasAutoIncrement: true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'PRIMARY KEY AUTOINCREMENT',
+    ),
+  );
+  static const VerificationMeta _fkdocumentMeta = const VerificationMeta(
+    'fkdocument',
+  );
+  @override
+  late final GeneratedColumn<int> fkdocument = GeneratedColumn<int>(
+    'fkdocument',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES local_documents (id)',
+    ),
+  );
+  static const VerificationMeta _revMeta = const VerificationMeta('rev');
+  @override
+  late final GeneratedColumn<String> rev = GeneratedColumn<String>(
+    'rev',
+    aliasedName,
+    false,
+    type: DriftSqlType.string,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _versionMeta = const VerificationMeta(
+    'version',
+  );
+  @override
+  late final GeneratedColumn<int> version = GeneratedColumn<int>(
+    'version',
+    aliasedName,
+    false,
+    type: DriftSqlType.int,
+    requiredDuringInsert: true,
+  );
+  static const VerificationMeta _deletedMeta = const VerificationMeta(
+    'deleted',
+  );
+  @override
+  late final GeneratedColumn<bool> deleted = GeneratedColumn<bool>(
+    'deleted',
+    aliasedName,
+    true,
+    type: DriftSqlType.bool,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'CHECK ("deleted" IN (0, 1))',
+    ),
+  );
+  static const VerificationMeta _bodyMeta = const VerificationMeta('body');
+  @override
+  late final GeneratedColumn<String> body = GeneratedColumn<String>(
+    'body',
+    aliasedName,
+    true,
+    type: DriftSqlType.string,
+    requiredDuringInsert: false,
+  );
+  @override
+  List<GeneratedColumn> get $columns => [
+    id,
+    fkdocument,
+    rev,
+    version,
+    deleted,
+    body,
+  ];
+  @override
+  String get aliasedName => _alias ?? actualTableName;
+  @override
+  String get actualTableName => $name;
+  static const String $name = 'local_conflict_revisions';
+  @override
+  VerificationContext validateIntegrity(
+    Insertable<LocalConflictRevision> instance, {
+    bool isInserting = false,
+  }) {
+    final context = VerificationContext();
+    final data = instance.toColumns(true);
+    if (data.containsKey('id')) {
+      context.handle(_idMeta, id.isAcceptableOrUnknown(data['id']!, _idMeta));
+    }
+    if (data.containsKey('fkdocument')) {
+      context.handle(
+        _fkdocumentMeta,
+        fkdocument.isAcceptableOrUnknown(data['fkdocument']!, _fkdocumentMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_fkdocumentMeta);
+    }
+    if (data.containsKey('rev')) {
+      context.handle(
+        _revMeta,
+        rev.isAcceptableOrUnknown(data['rev']!, _revMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_revMeta);
+    }
+    if (data.containsKey('version')) {
+      context.handle(
+        _versionMeta,
+        version.isAcceptableOrUnknown(data['version']!, _versionMeta),
+      );
+    } else if (isInserting) {
+      context.missing(_versionMeta);
+    }
+    if (data.containsKey('deleted')) {
+      context.handle(
+        _deletedMeta,
+        deleted.isAcceptableOrUnknown(data['deleted']!, _deletedMeta),
+      );
+    }
+    if (data.containsKey('body')) {
+      context.handle(
+        _bodyMeta,
+        body.isAcceptableOrUnknown(data['body']!, _bodyMeta),
+      );
+    }
+    return context;
+  }
+
+  @override
+  Set<GeneratedColumn> get $primaryKey => {id};
+  @override
+  LocalConflictRevision map(Map<String, dynamic> data, {String? tablePrefix}) {
+    final effectivePrefix = tablePrefix != null ? '$tablePrefix.' : '';
+    return LocalConflictRevision(
+      id: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}id'],
+      )!,
+      fkdocument: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}fkdocument'],
+      )!,
+      rev: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}rev'],
+      )!,
+      version: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}version'],
+      )!,
+      deleted: attachedDatabase.typeMapping.read(
+        DriftSqlType.bool,
+        data['${effectivePrefix}deleted'],
+      ),
+      body: attachedDatabase.typeMapping.read(
+        DriftSqlType.string,
+        data['${effectivePrefix}body'],
+      ),
+    );
+  }
+
+  @override
+  $LocalConflictRevisionsTable createAlias(String alias) {
+    return $LocalConflictRevisionsTable(attachedDatabase, alias);
+  }
+}
+
+class LocalConflictRevision extends DataClass
+    implements Insertable<LocalConflictRevision> {
+  final int id;
+
+  /// The (stable) [LocalDocuments] row id this conflict leaf belongs to.
+  final int fkdocument;
+
+  /// Full revision id of this leaf, e.g. "2-abcdef…".
+  final String rev;
+
+  /// Generation number (the "N" in "N-hash"), stored for sorting/winner calc.
+  final int version;
+  final bool? deleted;
+
+  /// Stored document body (JSON, with `_attachments` stripped — handled like
+  /// the winner blob). Null for a deleted (tombstone) conflict leaf.
+  final String? body;
+  const LocalConflictRevision({
+    required this.id,
+    required this.fkdocument,
+    required this.rev,
+    required this.version,
+    this.deleted,
+    this.body,
+  });
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    map['id'] = Variable<int>(id);
+    map['fkdocument'] = Variable<int>(fkdocument);
+    map['rev'] = Variable<String>(rev);
+    map['version'] = Variable<int>(version);
+    if (!nullToAbsent || deleted != null) {
+      map['deleted'] = Variable<bool>(deleted);
+    }
+    if (!nullToAbsent || body != null) {
+      map['body'] = Variable<String>(body);
+    }
+    return map;
+  }
+
+  LocalConflictRevisionsCompanion toCompanion(bool nullToAbsent) {
+    return LocalConflictRevisionsCompanion(
+      id: Value(id),
+      fkdocument: Value(fkdocument),
+      rev: Value(rev),
+      version: Value(version),
+      deleted: deleted == null && nullToAbsent
+          ? const Value.absent()
+          : Value(deleted),
+      body: body == null && nullToAbsent ? const Value.absent() : Value(body),
+    );
+  }
+
+  factory LocalConflictRevision.fromJson(
+    Map<String, dynamic> json, {
+    ValueSerializer? serializer,
+  }) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return LocalConflictRevision(
+      id: serializer.fromJson<int>(json['id']),
+      fkdocument: serializer.fromJson<int>(json['fkdocument']),
+      rev: serializer.fromJson<String>(json['rev']),
+      version: serializer.fromJson<int>(json['version']),
+      deleted: serializer.fromJson<bool?>(json['deleted']),
+      body: serializer.fromJson<String?>(json['body']),
+    );
+  }
+  @override
+  Map<String, dynamic> toJson({ValueSerializer? serializer}) {
+    serializer ??= driftRuntimeOptions.defaultSerializer;
+    return <String, dynamic>{
+      'id': serializer.toJson<int>(id),
+      'fkdocument': serializer.toJson<int>(fkdocument),
+      'rev': serializer.toJson<String>(rev),
+      'version': serializer.toJson<int>(version),
+      'deleted': serializer.toJson<bool?>(deleted),
+      'body': serializer.toJson<String?>(body),
+    };
+  }
+
+  LocalConflictRevision copyWith({
+    int? id,
+    int? fkdocument,
+    String? rev,
+    int? version,
+    Value<bool?> deleted = const Value.absent(),
+    Value<String?> body = const Value.absent(),
+  }) => LocalConflictRevision(
+    id: id ?? this.id,
+    fkdocument: fkdocument ?? this.fkdocument,
+    rev: rev ?? this.rev,
+    version: version ?? this.version,
+    deleted: deleted.present ? deleted.value : this.deleted,
+    body: body.present ? body.value : this.body,
+  );
+  LocalConflictRevision copyWithCompanion(
+    LocalConflictRevisionsCompanion data,
+  ) {
+    return LocalConflictRevision(
+      id: data.id.present ? data.id.value : this.id,
+      fkdocument: data.fkdocument.present
+          ? data.fkdocument.value
+          : this.fkdocument,
+      rev: data.rev.present ? data.rev.value : this.rev,
+      version: data.version.present ? data.version.value : this.version,
+      deleted: data.deleted.present ? data.deleted.value : this.deleted,
+      body: data.body.present ? data.body.value : this.body,
+    );
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('LocalConflictRevision(')
+          ..write('id: $id, ')
+          ..write('fkdocument: $fkdocument, ')
+          ..write('rev: $rev, ')
+          ..write('version: $version, ')
+          ..write('deleted: $deleted, ')
+          ..write('body: $body')
+          ..write(')'))
+        .toString();
+  }
+
+  @override
+  int get hashCode => Object.hash(id, fkdocument, rev, version, deleted, body);
+  @override
+  bool operator ==(Object other) =>
+      identical(this, other) ||
+      (other is LocalConflictRevision &&
+          other.id == this.id &&
+          other.fkdocument == this.fkdocument &&
+          other.rev == this.rev &&
+          other.version == this.version &&
+          other.deleted == this.deleted &&
+          other.body == this.body);
+}
+
+class LocalConflictRevisionsCompanion
+    extends UpdateCompanion<LocalConflictRevision> {
+  final Value<int> id;
+  final Value<int> fkdocument;
+  final Value<String> rev;
+  final Value<int> version;
+  final Value<bool?> deleted;
+  final Value<String?> body;
+  const LocalConflictRevisionsCompanion({
+    this.id = const Value.absent(),
+    this.fkdocument = const Value.absent(),
+    this.rev = const Value.absent(),
+    this.version = const Value.absent(),
+    this.deleted = const Value.absent(),
+    this.body = const Value.absent(),
+  });
+  LocalConflictRevisionsCompanion.insert({
+    this.id = const Value.absent(),
+    required int fkdocument,
+    required String rev,
+    required int version,
+    this.deleted = const Value.absent(),
+    this.body = const Value.absent(),
+  }) : fkdocument = Value(fkdocument),
+       rev = Value(rev),
+       version = Value(version);
+  static Insertable<LocalConflictRevision> custom({
+    Expression<int>? id,
+    Expression<int>? fkdocument,
+    Expression<String>? rev,
+    Expression<int>? version,
+    Expression<bool>? deleted,
+    Expression<String>? body,
+  }) {
+    return RawValuesInsertable({
+      if (id != null) 'id': id,
+      if (fkdocument != null) 'fkdocument': fkdocument,
+      if (rev != null) 'rev': rev,
+      if (version != null) 'version': version,
+      if (deleted != null) 'deleted': deleted,
+      if (body != null) 'body': body,
+    });
+  }
+
+  LocalConflictRevisionsCompanion copyWith({
+    Value<int>? id,
+    Value<int>? fkdocument,
+    Value<String>? rev,
+    Value<int>? version,
+    Value<bool?>? deleted,
+    Value<String?>? body,
+  }) {
+    return LocalConflictRevisionsCompanion(
+      id: id ?? this.id,
+      fkdocument: fkdocument ?? this.fkdocument,
+      rev: rev ?? this.rev,
+      version: version ?? this.version,
+      deleted: deleted ?? this.deleted,
+      body: body ?? this.body,
+    );
+  }
+
+  @override
+  Map<String, Expression> toColumns(bool nullToAbsent) {
+    final map = <String, Expression>{};
+    if (id.present) {
+      map['id'] = Variable<int>(id.value);
+    }
+    if (fkdocument.present) {
+      map['fkdocument'] = Variable<int>(fkdocument.value);
+    }
+    if (rev.present) {
+      map['rev'] = Variable<String>(rev.value);
+    }
+    if (version.present) {
+      map['version'] = Variable<int>(version.value);
+    }
+    if (deleted.present) {
+      map['deleted'] = Variable<bool>(deleted.value);
+    }
+    if (body.present) {
+      map['body'] = Variable<String>(body.value);
+    }
+    return map;
+  }
+
+  @override
+  String toString() {
+    return (StringBuffer('LocalConflictRevisionsCompanion(')
+          ..write('id: $id, ')
+          ..write('fkdocument: $fkdocument, ')
+          ..write('rev: $rev, ')
+          ..write('version: $version, ')
+          ..write('deleted: $deleted, ')
+          ..write('body: $body')
+          ..write(')'))
+        .toString();
+  }
+}
+
 class $LocalAttachmentsTable extends LocalAttachments
     with TableInfo<$LocalAttachmentsTable, LocalAttachment> {
   @override
@@ -1434,6 +1850,20 @@ class $LocalAttachmentsTable extends LocalAttachments
     type: DriftSqlType.string,
     requiredDuringInsert: false,
   );
+  static const VerificationMeta _fkconflictMeta = const VerificationMeta(
+    'fkconflict',
+  );
+  @override
+  late final GeneratedColumn<int> fkconflict = GeneratedColumn<int>(
+    'fkconflict',
+    aliasedName,
+    true,
+    type: DriftSqlType.int,
+    requiredDuringInsert: false,
+    defaultConstraints: GeneratedColumn.constraintIsAlways(
+      'REFERENCES local_conflict_revisions (id)',
+    ),
+  );
   @override
   List<GeneratedColumn> get $columns => [
     id,
@@ -1445,6 +1875,7 @@ class $LocalAttachmentsTable extends LocalAttachments
     contentType,
     digest,
     encoding,
+    fkconflict,
   ];
   @override
   String get aliasedName => _alias ?? actualTableName;
@@ -1526,6 +1957,12 @@ class $LocalAttachmentsTable extends LocalAttachments
         encoding.isAcceptableOrUnknown(data['encoding']!, _encodingMeta),
       );
     }
+    if (data.containsKey('fkconflict')) {
+      context.handle(
+        _fkconflictMeta,
+        fkconflict.isAcceptableOrUnknown(data['fkconflict']!, _fkconflictMeta),
+      );
+    }
     return context;
   }
 
@@ -1570,6 +2007,10 @@ class $LocalAttachmentsTable extends LocalAttachments
       encoding: attachedDatabase.typeMapping.read(
         DriftSqlType.string,
         data['${effectivePrefix}encoding'],
+      ),
+      fkconflict: attachedDatabase.typeMapping.read(
+        DriftSqlType.int,
+        data['${effectivePrefix}fkconflict'],
       ),
     );
   }
@@ -1617,6 +2058,22 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
   /// `att/{id}` file holds the decompressed content. This matches CouchDB's
   /// `encoding` field returned with `att_encoding_info=true`.
   final String? encoding;
+
+  /// When non-null, this attachment belongs to a **non-winning conflict leaf**
+  /// (the referenced [LocalConflictRevisions] row id) rather than to the
+  /// winning revision. Winner attachments have `fkconflict == null` and behave
+  /// exactly as before (PLAN.md Phase 1 Stage 2 / Decision A2).
+  ///
+  /// [fkdocument] is still set on conflict-leaf attachments (to the owning
+  /// document row), so the `delete_attachments_before_document` BEFORE-DELETE
+  /// trigger cleans them on document/database hard-delete. The
+  /// `cleanup_attachments_on_tombstone` trigger is scoped to `fkconflict IS
+  /// NULL` so tombstoning the winner does NOT drop conflict-leaf attachments —
+  /// a surviving leaf may be promoted to winner and needs them. Deleting a
+  /// conflict-leaf row drops its attachment rows via
+  /// `delete_conflict_attachments_before_conflict_revision`; the Dart layer
+  /// deletes the files (triggers cannot touch the filesystem).
+  final int? fkconflict;
   const LocalAttachment({
     required this.id,
     required this.fkdocument,
@@ -1627,6 +2084,7 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
     required this.contentType,
     required this.digest,
     this.encoding,
+    this.fkconflict,
   });
   @override
   Map<String, Expression> toColumns(bool nullToAbsent) {
@@ -1641,6 +2099,9 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
     map['digest'] = Variable<String>(digest);
     if (!nullToAbsent || encoding != null) {
       map['encoding'] = Variable<String>(encoding);
+    }
+    if (!nullToAbsent || fkconflict != null) {
+      map['fkconflict'] = Variable<int>(fkconflict);
     }
     return map;
   }
@@ -1658,6 +2119,9 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
       encoding: encoding == null && nullToAbsent
           ? const Value.absent()
           : Value(encoding),
+      fkconflict: fkconflict == null && nullToAbsent
+          ? const Value.absent()
+          : Value(fkconflict),
     );
   }
 
@@ -1676,6 +2140,7 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
       contentType: serializer.fromJson<String>(json['contentType']),
       digest: serializer.fromJson<String>(json['digest']),
       encoding: serializer.fromJson<String?>(json['encoding']),
+      fkconflict: serializer.fromJson<int?>(json['fkconflict']),
     );
   }
   @override
@@ -1691,6 +2156,7 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
       'contentType': serializer.toJson<String>(contentType),
       'digest': serializer.toJson<String>(digest),
       'encoding': serializer.toJson<String?>(encoding),
+      'fkconflict': serializer.toJson<int?>(fkconflict),
     };
   }
 
@@ -1704,6 +2170,7 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
     String? contentType,
     String? digest,
     Value<String?> encoding = const Value.absent(),
+    Value<int?> fkconflict = const Value.absent(),
   }) => LocalAttachment(
     id: id ?? this.id,
     fkdocument: fkdocument ?? this.fkdocument,
@@ -1714,6 +2181,7 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
     contentType: contentType ?? this.contentType,
     digest: digest ?? this.digest,
     encoding: encoding.present ? encoding.value : this.encoding,
+    fkconflict: fkconflict.present ? fkconflict.value : this.fkconflict,
   );
   LocalAttachment copyWithCompanion(LocalAttachmentsCompanion data) {
     return LocalAttachment(
@@ -1730,6 +2198,9 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
           : this.contentType,
       digest: data.digest.present ? data.digest.value : this.digest,
       encoding: data.encoding.present ? data.encoding.value : this.encoding,
+      fkconflict: data.fkconflict.present
+          ? data.fkconflict.value
+          : this.fkconflict,
     );
   }
 
@@ -1744,7 +2215,8 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
           ..write('length: $length, ')
           ..write('contentType: $contentType, ')
           ..write('digest: $digest, ')
-          ..write('encoding: $encoding')
+          ..write('encoding: $encoding, ')
+          ..write('fkconflict: $fkconflict')
           ..write(')'))
         .toString();
   }
@@ -1760,6 +2232,7 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
     contentType,
     digest,
     encoding,
+    fkconflict,
   );
   @override
   bool operator ==(Object other) =>
@@ -1773,7 +2246,8 @@ class LocalAttachment extends DataClass implements Insertable<LocalAttachment> {
           other.length == this.length &&
           other.contentType == this.contentType &&
           other.digest == this.digest &&
-          other.encoding == this.encoding);
+          other.encoding == this.encoding &&
+          other.fkconflict == this.fkconflict);
 }
 
 class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
@@ -1786,6 +2260,7 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
   final Value<String> contentType;
   final Value<String> digest;
   final Value<String?> encoding;
+  final Value<int?> fkconflict;
   const LocalAttachmentsCompanion({
     this.id = const Value.absent(),
     this.fkdocument = const Value.absent(),
@@ -1796,6 +2271,7 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
     this.contentType = const Value.absent(),
     this.digest = const Value.absent(),
     this.encoding = const Value.absent(),
+    this.fkconflict = const Value.absent(),
   });
   LocalAttachmentsCompanion.insert({
     this.id = const Value.absent(),
@@ -1807,6 +2283,7 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
     required String contentType,
     required String digest,
     this.encoding = const Value.absent(),
+    this.fkconflict = const Value.absent(),
   }) : fkdocument = Value(fkdocument),
        ordering = Value(ordering),
        revpos = Value(revpos),
@@ -1824,6 +2301,7 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
     Expression<String>? contentType,
     Expression<String>? digest,
     Expression<String>? encoding,
+    Expression<int>? fkconflict,
   }) {
     return RawValuesInsertable({
       if (id != null) 'id': id,
@@ -1835,6 +2313,7 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
       if (contentType != null) 'content_type': contentType,
       if (digest != null) 'digest': digest,
       if (encoding != null) 'encoding': encoding,
+      if (fkconflict != null) 'fkconflict': fkconflict,
     });
   }
 
@@ -1848,6 +2327,7 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
     Value<String>? contentType,
     Value<String>? digest,
     Value<String?>? encoding,
+    Value<int?>? fkconflict,
   }) {
     return LocalAttachmentsCompanion(
       id: id ?? this.id,
@@ -1859,6 +2339,7 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
       contentType: contentType ?? this.contentType,
       digest: digest ?? this.digest,
       encoding: encoding ?? this.encoding,
+      fkconflict: fkconflict ?? this.fkconflict,
     );
   }
 
@@ -1892,6 +2373,9 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
     if (encoding.present) {
       map['encoding'] = Variable<String>(encoding.value);
     }
+    if (fkconflict.present) {
+      map['fkconflict'] = Variable<int>(fkconflict.value);
+    }
     return map;
   }
 
@@ -1906,7 +2390,8 @@ class LocalAttachmentsCompanion extends UpdateCompanion<LocalAttachment> {
           ..write('length: $length, ')
           ..write('contentType: $contentType, ')
           ..write('digest: $digest, ')
-          ..write('encoding: $encoding')
+          ..write('encoding: $encoding, ')
+          ..write('fkconflict: $fkconflict')
           ..write(')'))
         .toString();
   }
@@ -2690,6 +3175,8 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final $DocumentBlobsTable documentBlobs = $DocumentBlobsTable(this);
   late final $RevisionHistoriesTable revisionHistories =
       $RevisionHistoriesTable(this);
+  late final $LocalConflictRevisionsTable localConflictRevisions =
+      $LocalConflictRevisionsTable(this);
   late final $LocalAttachmentsTable localAttachments = $LocalAttachmentsTable(
     this,
   );
@@ -2725,6 +3212,14 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     'revision_histories_seq',
     'CREATE INDEX revision_histories_seq ON revision_histories (seq)',
   );
+  late final Index localConflictRevisionsFkdocumentIndex = Index(
+    'local_conflict_revisions_fkdocument_index',
+    'CREATE INDEX local_conflict_revisions_fkdocument_index ON local_conflict_revisions (fkdocument)',
+  );
+  late final Index localConflictRevisionsFkdocumentRev = Index(
+    'local_conflict_revisions_fkdocument_rev',
+    'CREATE UNIQUE INDEX local_conflict_revisions_fkdocument_rev ON local_conflict_revisions (fkdocument, rev)',
+  );
   late final Index localAttachmentsNameIndex = Index(
     'local_attachments_name_index',
     'CREATE INDEX local_attachments_name_index ON local_attachments (name)',
@@ -2736,6 +3231,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
   late final Index localAttachmentsFkdocumentIndex = Index(
     'local_attachments_fkdocument_index',
     'CREATE INDEX local_attachments_fkdocument_index ON local_attachments (fkdocument)',
+  );
+  late final Index localAttachmentsFkconflictIndex = Index(
+    'local_attachments_fkconflict_index',
+    'CREATE INDEX local_attachments_fkconflict_index ON local_attachments (fkconflict)',
   );
   late final Index localViewViewPathShortIndex = Index(
     'local_view_view_path_short_index',
@@ -2758,6 +3257,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     localDocuments,
     documentBlobs,
     revisionHistories,
+    localConflictRevisions,
     localAttachments,
     localViews,
     localViewEntries,
@@ -2768,9 +3268,12 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     revisionHistoriesRevIndex,
     revisionHistoriesVersionIndex,
     revisionHistoriesSeq,
+    localConflictRevisionsFkdocumentIndex,
+    localConflictRevisionsFkdocumentRev,
     localAttachmentsNameIndex,
     localAttachmentsRevposIndex,
     localAttachmentsFkdocumentIndex,
+    localAttachmentsFkconflictIndex,
     localViewViewPathShortIndex,
     localViewsUnique,
     localViewEntriesDocidIndex,
@@ -3237,6 +3740,34 @@ final class $$LocalDocumentsTableReferences
     );
   }
 
+  static MultiTypedResultKey<
+    $LocalConflictRevisionsTable,
+    List<LocalConflictRevision>
+  >
+  _localConflictRevisionsRefsTable(_$AppDatabase db) =>
+      MultiTypedResultKey.fromTable(
+        db.localConflictRevisions,
+        aliasName: $_aliasNameGenerator(
+          db.localDocuments.id,
+          db.localConflictRevisions.fkdocument,
+        ),
+      );
+
+  $$LocalConflictRevisionsTableProcessedTableManager
+  get localConflictRevisionsRefs {
+    final manager = $$LocalConflictRevisionsTableTableManager(
+      $_db,
+      $_db.localConflictRevisions,
+    ).filter((f) => f.fkdocument.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(
+      _localConflictRevisionsRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+
   static MultiTypedResultKey<$LocalAttachmentsTable, List<LocalAttachment>>
   _localAttachmentsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
     db.localAttachments,
@@ -3370,6 +3901,32 @@ class $$LocalDocumentsTableFilterComposer
                 $removeJoinBuilderFromRootComposer,
           ),
     );
+    return f(composer);
+  }
+
+  Expression<bool> localConflictRevisionsRefs(
+    Expression<bool> Function($$LocalConflictRevisionsTableFilterComposer f) f,
+  ) {
+    final $$LocalConflictRevisionsTableFilterComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.id,
+          referencedTable: $db.localConflictRevisions,
+          getReferencedColumn: (t) => t.fkdocument,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$LocalConflictRevisionsTableFilterComposer(
+                $db: $db,
+                $table: $db.localConflictRevisions,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
     return f(composer);
   }
 
@@ -3563,6 +4120,32 @@ class $$LocalDocumentsTableAnnotationComposer
     return f(composer);
   }
 
+  Expression<T> localConflictRevisionsRefs<T extends Object>(
+    Expression<T> Function($$LocalConflictRevisionsTableAnnotationComposer a) f,
+  ) {
+    final $$LocalConflictRevisionsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.id,
+          referencedTable: $db.localConflictRevisions,
+          getReferencedColumn: (t) => t.fkdocument,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$LocalConflictRevisionsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.localConflictRevisions,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return f(composer);
+  }
+
   Expression<T> localAttachmentsRefs<T extends Object>(
     Expression<T> Function($$LocalAttachmentsTableAnnotationComposer a) f,
   ) {
@@ -3606,6 +4189,7 @@ class $$LocalDocumentsTableTableManager
             bool fkdatabase,
             bool documentBlobsRefs,
             bool revisionHistoriesRefs,
+            bool localConflictRevisionsRefs,
             bool localAttachmentsRefs,
           })
         > {
@@ -3671,6 +4255,7 @@ class $$LocalDocumentsTableTableManager
                 fkdatabase = false,
                 documentBlobsRefs = false,
                 revisionHistoriesRefs = false,
+                localConflictRevisionsRefs = false,
                 localAttachmentsRefs = false,
               }) {
                 return PrefetchHooks(
@@ -3678,6 +4263,7 @@ class $$LocalDocumentsTableTableManager
                   explicitlyWatchedTables: [
                     if (documentBlobsRefs) db.documentBlobs,
                     if (revisionHistoriesRefs) db.revisionHistories,
+                    if (localConflictRevisionsRefs) db.localConflictRevisions,
                     if (localAttachmentsRefs) db.localAttachments,
                   ],
                   addJoins:
@@ -3758,6 +4344,27 @@ class $$LocalDocumentsTableTableManager
                               ),
                           typedResults: items,
                         ),
+                      if (localConflictRevisionsRefs)
+                        await $_getPrefetchedData<
+                          LocalDocument,
+                          $LocalDocumentsTable,
+                          LocalConflictRevision
+                        >(
+                          currentTable: table,
+                          referencedTable: $$LocalDocumentsTableReferences
+                              ._localConflictRevisionsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$LocalDocumentsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).localConflictRevisionsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.fkdocument == item.id,
+                              ),
+                          typedResults: items,
+                        ),
                       if (localAttachmentsRefs)
                         await $_getPrefetchedData<
                           LocalDocument,
@@ -3803,6 +4410,7 @@ typedef $$LocalDocumentsTableProcessedTableManager =
         bool fkdatabase,
         bool documentBlobsRefs,
         bool revisionHistoriesRefs,
+        bool localConflictRevisionsRefs,
         bool localAttachmentsRefs,
       })
     >;
@@ -4414,6 +5022,462 @@ typedef $$RevisionHistoriesTableProcessedTableManager =
       RevisionHistory,
       PrefetchHooks Function({bool fkdocument})
     >;
+typedef $$LocalConflictRevisionsTableCreateCompanionBuilder =
+    LocalConflictRevisionsCompanion Function({
+      Value<int> id,
+      required int fkdocument,
+      required String rev,
+      required int version,
+      Value<bool?> deleted,
+      Value<String?> body,
+    });
+typedef $$LocalConflictRevisionsTableUpdateCompanionBuilder =
+    LocalConflictRevisionsCompanion Function({
+      Value<int> id,
+      Value<int> fkdocument,
+      Value<String> rev,
+      Value<int> version,
+      Value<bool?> deleted,
+      Value<String?> body,
+    });
+
+final class $$LocalConflictRevisionsTableReferences
+    extends
+        BaseReferences<
+          _$AppDatabase,
+          $LocalConflictRevisionsTable,
+          LocalConflictRevision
+        > {
+  $$LocalConflictRevisionsTableReferences(
+    super.$_db,
+    super.$_table,
+    super.$_typedResult,
+  );
+
+  static $LocalDocumentsTable _fkdocumentTable(_$AppDatabase db) =>
+      db.localDocuments.createAlias(
+        $_aliasNameGenerator(
+          db.localConflictRevisions.fkdocument,
+          db.localDocuments.id,
+        ),
+      );
+
+  $$LocalDocumentsTableProcessedTableManager get fkdocument {
+    final $_column = $_itemColumn<int>('fkdocument')!;
+
+    final manager = $$LocalDocumentsTableTableManager(
+      $_db,
+      $_db.localDocuments,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_fkdocumentTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static MultiTypedResultKey<$LocalAttachmentsTable, List<LocalAttachment>>
+  _localAttachmentsRefsTable(_$AppDatabase db) => MultiTypedResultKey.fromTable(
+    db.localAttachments,
+    aliasName: $_aliasNameGenerator(
+      db.localConflictRevisions.id,
+      db.localAttachments.fkconflict,
+    ),
+  );
+
+  $$LocalAttachmentsTableProcessedTableManager get localAttachmentsRefs {
+    final manager = $$LocalAttachmentsTableTableManager(
+      $_db,
+      $_db.localAttachments,
+    ).filter((f) => f.fkconflict.id.sqlEquals($_itemColumn<int>('id')!));
+
+    final cache = $_typedResult.readTableOrNull(
+      _localAttachmentsRefsTable($_db),
+    );
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: cache),
+    );
+  }
+}
+
+class $$LocalConflictRevisionsTableFilterComposer
+    extends Composer<_$AppDatabase, $LocalConflictRevisionsTable> {
+  $$LocalConflictRevisionsTableFilterComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnFilters<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get rev => $composableBuilder(
+    column: $table.rev,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<int> get version => $composableBuilder(
+    column: $table.version,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<bool> get deleted => $composableBuilder(
+    column: $table.deleted,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  ColumnFilters<String> get body => $composableBuilder(
+    column: $table.body,
+    builder: (column) => ColumnFilters(column),
+  );
+
+  $$LocalDocumentsTableFilterComposer get fkdocument {
+    final $$LocalDocumentsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.fkdocument,
+      referencedTable: $db.localDocuments,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LocalDocumentsTableFilterComposer(
+            $db: $db,
+            $table: $db.localDocuments,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  Expression<bool> localAttachmentsRefs(
+    Expression<bool> Function($$LocalAttachmentsTableFilterComposer f) f,
+  ) {
+    final $$LocalAttachmentsTableFilterComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.localAttachments,
+      getReferencedColumn: (t) => t.fkconflict,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LocalAttachmentsTableFilterComposer(
+            $db: $db,
+            $table: $db.localAttachments,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$LocalConflictRevisionsTableOrderingComposer
+    extends Composer<_$AppDatabase, $LocalConflictRevisionsTable> {
+  $$LocalConflictRevisionsTableOrderingComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  ColumnOrderings<int> get id => $composableBuilder(
+    column: $table.id,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get rev => $composableBuilder(
+    column: $table.rev,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<int> get version => $composableBuilder(
+    column: $table.version,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<bool> get deleted => $composableBuilder(
+    column: $table.deleted,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  ColumnOrderings<String> get body => $composableBuilder(
+    column: $table.body,
+    builder: (column) => ColumnOrderings(column),
+  );
+
+  $$LocalDocumentsTableOrderingComposer get fkdocument {
+    final $$LocalDocumentsTableOrderingComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.fkdocument,
+      referencedTable: $db.localDocuments,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LocalDocumentsTableOrderingComposer(
+            $db: $db,
+            $table: $db.localDocuments,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+}
+
+class $$LocalConflictRevisionsTableAnnotationComposer
+    extends Composer<_$AppDatabase, $LocalConflictRevisionsTable> {
+  $$LocalConflictRevisionsTableAnnotationComposer({
+    required super.$db,
+    required super.$table,
+    super.joinBuilder,
+    super.$addJoinBuilderToRootComposer,
+    super.$removeJoinBuilderFromRootComposer,
+  });
+  GeneratedColumn<int> get id =>
+      $composableBuilder(column: $table.id, builder: (column) => column);
+
+  GeneratedColumn<String> get rev =>
+      $composableBuilder(column: $table.rev, builder: (column) => column);
+
+  GeneratedColumn<int> get version =>
+      $composableBuilder(column: $table.version, builder: (column) => column);
+
+  GeneratedColumn<bool> get deleted =>
+      $composableBuilder(column: $table.deleted, builder: (column) => column);
+
+  GeneratedColumn<String> get body =>
+      $composableBuilder(column: $table.body, builder: (column) => column);
+
+  $$LocalDocumentsTableAnnotationComposer get fkdocument {
+    final $$LocalDocumentsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.fkdocument,
+      referencedTable: $db.localDocuments,
+      getReferencedColumn: (t) => t.id,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LocalDocumentsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.localDocuments,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return composer;
+  }
+
+  Expression<T> localAttachmentsRefs<T extends Object>(
+    Expression<T> Function($$LocalAttachmentsTableAnnotationComposer a) f,
+  ) {
+    final $$LocalAttachmentsTableAnnotationComposer composer = $composerBuilder(
+      composer: this,
+      getCurrentColumn: (t) => t.id,
+      referencedTable: $db.localAttachments,
+      getReferencedColumn: (t) => t.fkconflict,
+      builder:
+          (
+            joinBuilder, {
+            $addJoinBuilderToRootComposer,
+            $removeJoinBuilderFromRootComposer,
+          }) => $$LocalAttachmentsTableAnnotationComposer(
+            $db: $db,
+            $table: $db.localAttachments,
+            $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+            joinBuilder: joinBuilder,
+            $removeJoinBuilderFromRootComposer:
+                $removeJoinBuilderFromRootComposer,
+          ),
+    );
+    return f(composer);
+  }
+}
+
+class $$LocalConflictRevisionsTableTableManager
+    extends
+        RootTableManager<
+          _$AppDatabase,
+          $LocalConflictRevisionsTable,
+          LocalConflictRevision,
+          $$LocalConflictRevisionsTableFilterComposer,
+          $$LocalConflictRevisionsTableOrderingComposer,
+          $$LocalConflictRevisionsTableAnnotationComposer,
+          $$LocalConflictRevisionsTableCreateCompanionBuilder,
+          $$LocalConflictRevisionsTableUpdateCompanionBuilder,
+          (LocalConflictRevision, $$LocalConflictRevisionsTableReferences),
+          LocalConflictRevision,
+          PrefetchHooks Function({bool fkdocument, bool localAttachmentsRefs})
+        > {
+  $$LocalConflictRevisionsTableTableManager(
+    _$AppDatabase db,
+    $LocalConflictRevisionsTable table,
+  ) : super(
+        TableManagerState(
+          db: db,
+          table: table,
+          createFilteringComposer: () =>
+              $$LocalConflictRevisionsTableFilterComposer(
+                $db: db,
+                $table: table,
+              ),
+          createOrderingComposer: () =>
+              $$LocalConflictRevisionsTableOrderingComposer(
+                $db: db,
+                $table: table,
+              ),
+          createComputedFieldComposer: () =>
+              $$LocalConflictRevisionsTableAnnotationComposer(
+                $db: db,
+                $table: table,
+              ),
+          updateCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                Value<int> fkdocument = const Value.absent(),
+                Value<String> rev = const Value.absent(),
+                Value<int> version = const Value.absent(),
+                Value<bool?> deleted = const Value.absent(),
+                Value<String?> body = const Value.absent(),
+              }) => LocalConflictRevisionsCompanion(
+                id: id,
+                fkdocument: fkdocument,
+                rev: rev,
+                version: version,
+                deleted: deleted,
+                body: body,
+              ),
+          createCompanionCallback:
+              ({
+                Value<int> id = const Value.absent(),
+                required int fkdocument,
+                required String rev,
+                required int version,
+                Value<bool?> deleted = const Value.absent(),
+                Value<String?> body = const Value.absent(),
+              }) => LocalConflictRevisionsCompanion.insert(
+                id: id,
+                fkdocument: fkdocument,
+                rev: rev,
+                version: version,
+                deleted: deleted,
+                body: body,
+              ),
+          withReferenceMapper: (p0) => p0
+              .map(
+                (e) => (
+                  e.readTable(table),
+                  $$LocalConflictRevisionsTableReferences(db, table, e),
+                ),
+              )
+              .toList(),
+          prefetchHooksCallback:
+              ({fkdocument = false, localAttachmentsRefs = false}) {
+                return PrefetchHooks(
+                  db: db,
+                  explicitlyWatchedTables: [
+                    if (localAttachmentsRefs) db.localAttachments,
+                  ],
+                  addJoins:
+                      <
+                        T extends TableManagerState<
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic,
+                          dynamic
+                        >
+                      >(state) {
+                        if (fkdocument) {
+                          state =
+                              state.withJoin(
+                                    currentTable: table,
+                                    currentColumn: table.fkdocument,
+                                    referencedTable:
+                                        $$LocalConflictRevisionsTableReferences
+                                            ._fkdocumentTable(db),
+                                    referencedColumn:
+                                        $$LocalConflictRevisionsTableReferences
+                                            ._fkdocumentTable(db)
+                                            .id,
+                                  )
+                                  as T;
+                        }
+
+                        return state;
+                      },
+                  getPrefetchedDataCallback: (items) async {
+                    return [
+                      if (localAttachmentsRefs)
+                        await $_getPrefetchedData<
+                          LocalConflictRevision,
+                          $LocalConflictRevisionsTable,
+                          LocalAttachment
+                        >(
+                          currentTable: table,
+                          referencedTable:
+                              $$LocalConflictRevisionsTableReferences
+                                  ._localAttachmentsRefsTable(db),
+                          managerFromTypedResult: (p0) =>
+                              $$LocalConflictRevisionsTableReferences(
+                                db,
+                                table,
+                                p0,
+                              ).localAttachmentsRefs,
+                          referencedItemsForCurrentItem:
+                              (item, referencedItems) => referencedItems.where(
+                                (e) => e.fkconflict == item.id,
+                              ),
+                          typedResults: items,
+                        ),
+                    ];
+                  },
+                );
+              },
+        ),
+      );
+}
+
+typedef $$LocalConflictRevisionsTableProcessedTableManager =
+    ProcessedTableManager<
+      _$AppDatabase,
+      $LocalConflictRevisionsTable,
+      LocalConflictRevision,
+      $$LocalConflictRevisionsTableFilterComposer,
+      $$LocalConflictRevisionsTableOrderingComposer,
+      $$LocalConflictRevisionsTableAnnotationComposer,
+      $$LocalConflictRevisionsTableCreateCompanionBuilder,
+      $$LocalConflictRevisionsTableUpdateCompanionBuilder,
+      (LocalConflictRevision, $$LocalConflictRevisionsTableReferences),
+      LocalConflictRevision,
+      PrefetchHooks Function({bool fkdocument, bool localAttachmentsRefs})
+    >;
 typedef $$LocalAttachmentsTableCreateCompanionBuilder =
     LocalAttachmentsCompanion Function({
       Value<int> id,
@@ -4425,6 +5489,7 @@ typedef $$LocalAttachmentsTableCreateCompanionBuilder =
       required String contentType,
       required String digest,
       Value<String?> encoding,
+      Value<int?> fkconflict,
     });
 typedef $$LocalAttachmentsTableUpdateCompanionBuilder =
     LocalAttachmentsCompanion Function({
@@ -4437,6 +5502,7 @@ typedef $$LocalAttachmentsTableUpdateCompanionBuilder =
       Value<String> contentType,
       Value<String> digest,
       Value<String?> encoding,
+      Value<int?> fkconflict,
     });
 
 final class $$LocalAttachmentsTableReferences
@@ -4464,6 +5530,28 @@ final class $$LocalAttachmentsTableReferences
       $_db.localDocuments,
     ).filter((f) => f.id.sqlEquals($_column));
     final item = $_typedResult.readTableOrNull(_fkdocumentTable($_db));
+    if (item == null) return manager;
+    return ProcessedTableManager(
+      manager.$state.copyWith(prefetchedData: [item]),
+    );
+  }
+
+  static $LocalConflictRevisionsTable _fkconflictTable(_$AppDatabase db) =>
+      db.localConflictRevisions.createAlias(
+        $_aliasNameGenerator(
+          db.localAttachments.fkconflict,
+          db.localConflictRevisions.id,
+        ),
+      );
+
+  $$LocalConflictRevisionsTableProcessedTableManager? get fkconflict {
+    final $_column = $_itemColumn<int>('fkconflict');
+    if ($_column == null) return null;
+    final manager = $$LocalConflictRevisionsTableTableManager(
+      $_db,
+      $_db.localConflictRevisions,
+    ).filter((f) => f.id.sqlEquals($_column));
+    final item = $_typedResult.readTableOrNull(_fkconflictTable($_db));
     if (item == null) return manager;
     return ProcessedTableManager(
       manager.$state.copyWith(prefetchedData: [item]),
@@ -4542,6 +5630,30 @@ class $$LocalAttachmentsTableFilterComposer
     );
     return composer;
   }
+
+  $$LocalConflictRevisionsTableFilterComposer get fkconflict {
+    final $$LocalConflictRevisionsTableFilterComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.fkconflict,
+          referencedTable: $db.localConflictRevisions,
+          getReferencedColumn: (t) => t.id,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$LocalConflictRevisionsTableFilterComposer(
+                $db: $db,
+                $table: $db.localConflictRevisions,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return composer;
+  }
 }
 
 class $$LocalAttachmentsTableOrderingComposer
@@ -4615,6 +5727,30 @@ class $$LocalAttachmentsTableOrderingComposer
     );
     return composer;
   }
+
+  $$LocalConflictRevisionsTableOrderingComposer get fkconflict {
+    final $$LocalConflictRevisionsTableOrderingComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.fkconflict,
+          referencedTable: $db.localConflictRevisions,
+          getReferencedColumn: (t) => t.id,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$LocalConflictRevisionsTableOrderingComposer(
+                $db: $db,
+                $table: $db.localConflictRevisions,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return composer;
+  }
 }
 
 class $$LocalAttachmentsTableAnnotationComposer
@@ -4674,6 +5810,30 @@ class $$LocalAttachmentsTableAnnotationComposer
     );
     return composer;
   }
+
+  $$LocalConflictRevisionsTableAnnotationComposer get fkconflict {
+    final $$LocalConflictRevisionsTableAnnotationComposer composer =
+        $composerBuilder(
+          composer: this,
+          getCurrentColumn: (t) => t.fkconflict,
+          referencedTable: $db.localConflictRevisions,
+          getReferencedColumn: (t) => t.id,
+          builder:
+              (
+                joinBuilder, {
+                $addJoinBuilderToRootComposer,
+                $removeJoinBuilderFromRootComposer,
+              }) => $$LocalConflictRevisionsTableAnnotationComposer(
+                $db: $db,
+                $table: $db.localConflictRevisions,
+                $addJoinBuilderToRootComposer: $addJoinBuilderToRootComposer,
+                joinBuilder: joinBuilder,
+                $removeJoinBuilderFromRootComposer:
+                    $removeJoinBuilderFromRootComposer,
+              ),
+        );
+    return composer;
+  }
 }
 
 class $$LocalAttachmentsTableTableManager
@@ -4689,7 +5849,7 @@ class $$LocalAttachmentsTableTableManager
           $$LocalAttachmentsTableUpdateCompanionBuilder,
           (LocalAttachment, $$LocalAttachmentsTableReferences),
           LocalAttachment,
-          PrefetchHooks Function({bool fkdocument})
+          PrefetchHooks Function({bool fkdocument, bool fkconflict})
         > {
   $$LocalAttachmentsTableTableManager(
     _$AppDatabase db,
@@ -4715,6 +5875,7 @@ class $$LocalAttachmentsTableTableManager
                 Value<String> contentType = const Value.absent(),
                 Value<String> digest = const Value.absent(),
                 Value<String?> encoding = const Value.absent(),
+                Value<int?> fkconflict = const Value.absent(),
               }) => LocalAttachmentsCompanion(
                 id: id,
                 fkdocument: fkdocument,
@@ -4725,6 +5886,7 @@ class $$LocalAttachmentsTableTableManager
                 contentType: contentType,
                 digest: digest,
                 encoding: encoding,
+                fkconflict: fkconflict,
               ),
           createCompanionCallback:
               ({
@@ -4737,6 +5899,7 @@ class $$LocalAttachmentsTableTableManager
                 required String contentType,
                 required String digest,
                 Value<String?> encoding = const Value.absent(),
+                Value<int?> fkconflict = const Value.absent(),
               }) => LocalAttachmentsCompanion.insert(
                 id: id,
                 fkdocument: fkdocument,
@@ -4747,6 +5910,7 @@ class $$LocalAttachmentsTableTableManager
                 contentType: contentType,
                 digest: digest,
                 encoding: encoding,
+                fkconflict: fkconflict,
               ),
           withReferenceMapper: (p0) => p0
               .map(
@@ -4756,7 +5920,7 @@ class $$LocalAttachmentsTableTableManager
                 ),
               )
               .toList(),
-          prefetchHooksCallback: ({fkdocument = false}) {
+          prefetchHooksCallback: ({fkdocument = false, fkconflict = false}) {
             return PrefetchHooks(
               db: db,
               explicitlyWatchedTables: [],
@@ -4791,6 +5955,21 @@ class $$LocalAttachmentsTableTableManager
                               )
                               as T;
                     }
+                    if (fkconflict) {
+                      state =
+                          state.withJoin(
+                                currentTable: table,
+                                currentColumn: table.fkconflict,
+                                referencedTable:
+                                    $$LocalAttachmentsTableReferences
+                                        ._fkconflictTable(db),
+                                referencedColumn:
+                                    $$LocalAttachmentsTableReferences
+                                        ._fkconflictTable(db)
+                                        .id,
+                              )
+                              as T;
+                    }
 
                     return state;
                   },
@@ -4815,7 +5994,7 @@ typedef $$LocalAttachmentsTableProcessedTableManager =
       $$LocalAttachmentsTableUpdateCompanionBuilder,
       (LocalAttachment, $$LocalAttachmentsTableReferences),
       LocalAttachment,
-      PrefetchHooks Function({bool fkdocument})
+      PrefetchHooks Function({bool fkdocument, bool fkconflict})
     >;
 typedef $$LocalViewsTableCreateCompanionBuilder =
     LocalViewsCompanion Function({
@@ -5588,6 +6767,11 @@ class $AppDatabaseManager {
       $$DocumentBlobsTableTableManager(_db, _db.documentBlobs);
   $$RevisionHistoriesTableTableManager get revisionHistories =>
       $$RevisionHistoriesTableTableManager(_db, _db.revisionHistories);
+  $$LocalConflictRevisionsTableTableManager get localConflictRevisions =>
+      $$LocalConflictRevisionsTableTableManager(
+        _db,
+        _db.localConflictRevisions,
+      );
   $$LocalAttachmentsTableTableManager get localAttachments =>
       $$LocalAttachmentsTableTableManager(_db, _db.localAttachments);
   $$LocalViewsTableTableManager get localViews =>

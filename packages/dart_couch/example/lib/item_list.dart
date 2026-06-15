@@ -27,10 +27,11 @@ class _ItemListState extends State<ItemList> {
   late final CurrentCategoryProvider _categoryProvider;
   String? _currentCategory;
 
-  StreamSubscription<ViewUpdate>? _viewSub;
+  StreamSubscription<ViewResult?>? _viewSub;
 
-  /// All item rows, maintained incrementally from the view.
-  final List<ViewEntry> _baseRows = [];
+  /// All item rows, from the latest view snapshot. Only read (never mutated)
+  /// after assignment, so we can alias the snapshot's list directly.
+  List<ViewEntry> _baseRows = const [];
 
   /// The rows actually shown: filtered by category, unchecked-first then by
   /// name. The source of truth for the alphabet scroll bar's index math.
@@ -71,8 +72,8 @@ class _ItemListState extends State<ItemList> {
         db = ddb;
       });
       _viewSub = ddb!
-          .useViewWithChanges('einkaufslistViews/itemsView', includeDocs: true)
-          .listen(_onViewUpdate);
+          .useView('einkaufslistViews/itemsView', includeDocs: true)
+          .listen(_onViewSnapshot);
     }();
   }
 
@@ -81,25 +82,14 @@ class _ItemListState extends State<ItemList> {
     _recomputeDisplay();
   }
 
-  /// Applies the view's edit script to [_baseRows], then recomputes the display.
-  void _onViewUpdate(ViewUpdate update) {
-    switch (update) {
-      case ViewSnapshot(:final result):
-        _baseRows
-          ..clear()
-          ..addAll(result?.rows ?? const []);
-      case ViewChanges(:final changes):
-        for (final change in changes) {
-          switch (change) {
-            case ViewRowInserted(:final index, :final row):
-              _baseRows.insert(index, row);
-            case ViewRowRemoved(:final index):
-              _baseRows.removeAt(index);
-            case ViewRowChanged(:final index, :final row):
-              _baseRows[index] = row;
-          }
-        }
-    }
+  /// Replaces [_baseRows] with the latest view snapshot, then recomputes the
+  /// display. The shopping list re-projects the view (filter by category +
+  /// unchecked/checked sort), so it diffs the *display* list itself in
+  /// [_recomputeDisplay] — that display diff is what drives the animations.
+  /// So plain [DartCouchDb.useView] is the right tool here: view-level deltas
+  /// from `useViewWithChanges` would just be re-diffed away.
+  void _onViewSnapshot(ViewResult? result) {
+    _baseRows = result?.rows ?? const [];
     _recomputeDisplay();
   }
 
@@ -145,6 +135,7 @@ class _ItemListState extends State<ItemList> {
     }
 
     // Rebuild the alphabet scroll bar (its counters/indices may have changed).
+    // TODO: is this necessary or even a bug??
     if (mounted) setState(() {});
   }
 

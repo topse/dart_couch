@@ -21,7 +21,8 @@
             "name": "Run Example App",
             "type": "dart",
             "request": "launch",
-            "program": "${workspaceFolder}/example/lib/main.dart"
+            "program": "${workspaceFolder}/example/lib/main.dart",
+            "flutterMode": "debug"
         },
         {
             "name": "Run Example App (Chrome)",

@@ -36,6 +36,9 @@ void main() async {
 
   Logger.root.level = Level.FINEST; // defaults to Level.INFO
   Logger.root.onRecord.listen((record) {
+    // talks too much, only activate if needed for debugging
+    // if (record.loggerName.contains('dart_couch')) return;
+
     LineSplitter ls = LineSplitter();
     for (final line in ls.convert(record.message)) {
       final formatted =
@@ -51,8 +54,14 @@ void main() async {
     }
   });
 
+  // Opt in to conflict resolution. The "erledigt" toggle is edited
+  // concurrently across devices and accumulates conflict trees; the deterministic
+  // KeepWinnerResolver collapses each conflicted doc to CouchDB's winning leaf
+  // (last-writer-wins) and tombstones the losers. Default (no resolver) would
+  // preserve conflicts forever, like plain CouchDB.
   OfflineFirstServer server = OfflineFirstServer(
     migration: EinkaufslisteMigration(),
+    conflictResolver: const KeepWinnerResolver(),
   );
   di.registerSingleton<OfflineFirstServer>(server);
 

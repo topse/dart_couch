@@ -22,4 +22,4 @@ TODO: When a app instance tries to create a database that has a tombstone: that 
       the Tombstone and create a new database with a new marker document. As the new Marker document
       has new uuids, other instances should be able to sync correctly.
 
-TODO: remove Future.delay
+TODO: remove Future.delay???

@@ -1,27 +1,75 @@
 import 'messages/couch_document_base.dart';
 
-// DEAD CODE: DocumentReplicationConflictResolver and DefaultConflictResolver
-// are currently unused. Replication uses newEdits=false (CouchDB protocol),
-// which never produces 409 conflicts. Instead, conflicts are resolved
-// deterministically by comparing revision hashes (higher hash wins),
-// matching CouchDB's built-in behavior. See local_dart_couch_db.dart bulkDocsRaw().
-abstract class DocumentReplicationConflictResolver {
-  Future<CouchDocumentBase> resolveConflict(
-    CouchDocumentBase local,
-    CouchDocumentBase remote,
-  );
+/// All conflicting leaf revisions of one document, passed to a
+/// [DocumentConflictResolver].
+///
+/// [winner] is CouchDB's deterministic winning revision; [conflicts] are the
+/// losing leaf revisions with their full bodies. A bodyless `not_found` leaf (a
+/// permanently compacted branch recorded via `recordBodylessLeaf`) is
+/// **excluded** — it has no body to merge and resolution intentionally does not
+/// tombstone it (CouchDB will not collapse a compacted-body leaf via a grafted
+/// tombstone, so tombstoning it is useless and causes churn; see
+/// `_maybeResolveConflict`).
+class ConflictedDocument {
+  final String docId;
+  final CouchDocumentBase winner;
+  final List<CouchDocumentBase> conflicts;
+
+  const ConflictedDocument({
+    required this.docId,
+    required this.winner,
+    required this.conflicts,
+  });
 }
 
-class DefaultConflictResolver extends DocumentReplicationConflictResolver {
-  static final DefaultConflictResolver instance = DefaultConflictResolver();
+/// Application hook for resolving a document that has more than one leaf
+/// revision (a conflict).
+///
+/// Resolution is an **opt-in layer on top of faithful replication**. The raw
+/// revision transfer never merges or deletes — it preserves conflicts exactly
+/// like CouchDB. When a resolver is configured, *after* the conflicting leaves
+/// have been transferred the library calls [resolve] for each conflicted
+/// document; given a survivor it writes that body as a new child of the winner
+/// and tombstones every other leaf. Those are ordinary edits that then
+/// replicate like any other change.
+///
+/// Implementations **MUST be deterministic and stable** — this is the contract:
+///  - *Deterministic*: the same inputs yield the same survivor on every device,
+///    so two devices resolving the same conflict independently converge
+///    (identical content + parent ⇒ identical rev) instead of creating a new
+///    conflict.
+///  - *Stable*: resolving a partial leaf set in steps must converge to the same
+///    result as resolving the whole set at once (conflict leaves can legitimately
+///    arrive across separate replication batches). `KeepWinnerResolver` satisfies
+///    both (it always lands on the global highest-(gen,hash) winner); custom
+///    merges are the app's responsibility, exactly as in CouchDB/PouchDB.
+///
+/// **Data safety does NOT depend on this contract.** A non-deterministic or buggy
+/// resolver — or an unreliable network, or a crash — can only cause *churn*
+/// (redundant resolution rounds), never lost or corrupted data: the library only
+/// ever tombstones the exact losing rev (a concurrent descendant survives),
+/// resolution writes are local-first + resumable, and a failure on one document
+/// leaves it conflicted (preserved) and retried later rather than aborting or
+/// corrupting anything. Deliberately no threshold-based "stop resolving" breaker
+/// (no heuristics); the worst case degrades to a preserved conflict.
+abstract class DocumentConflictResolver {
+  /// Returns the body to keep as the single surviving revision — one of
+  /// [doc.winner] / [doc.conflicts], or a merged document — or `null` to leave
+  /// the document in conflict (e.g. to resolve later in the UI). When non-null,
+  /// the library writes it as a child of [doc.winner] and tombstones all the
+  /// other leaves.
+  Future<CouchDocumentBase?> resolve(ConflictedDocument doc);
+}
+
+/// Opt-in resolver that keeps CouchDB's deterministic winner and tombstones the
+/// other leaves (deterministic last-writer-wins). Provided as a convenience —
+/// it is **not** the default. The default (no resolver) preserves conflicts,
+/// exactly like CouchDB.
+class KeepWinnerResolver implements DocumentConflictResolver {
+  const KeepWinnerResolver();
 
   @override
-  Future<CouchDocumentBase> resolveConflict(
-    CouchDocumentBase local,
-    CouchDocumentBase remote,
-  ) {
-    return Future.value(remote);
-  }
+  Future<CouchDocumentBase?> resolve(ConflictedDocument doc) async => doc.winner;
 }
 
 enum ReplicationDirection { push, pull, both }

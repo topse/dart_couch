@@ -63,6 +63,56 @@ void main() {
     expect(find.byType(Text), findsNWidgets(2));
   });
 
+  testWidgets(
+    'AnimatedViewList removes the old row instantly when a row moves '
+    '(no stale flicker)',
+    (tester) async {
+      final controller = StreamController<ViewUpdate>();
+      addTearDown(controller.close);
+
+      await tester.pumpWidget(
+        MaterialApp(
+          home: Scaffold(
+            body: AnimatedViewList(
+              updates: controller.stream,
+              itemBuilder: (context, row, index, animation) => SizeTransition(
+                sizeFactor: animation,
+                child: SizedBox(
+                  height: 40,
+                  child: Text('${row.id}:${row.value}'),
+                ),
+              ),
+            ),
+          ),
+        ),
+      );
+
+      controller.add(ViewSnapshot(_result([_row('a', 1), _row('b', 2)])));
+      await tester.pumpAndSettle();
+      expect(find.text('a:1'), findsOneWidget);
+
+      // A move = the same identity removed and re-inserted in one batch (e.g. a
+      // list item toggled and re-sorted, changing its content from 1 -> 2).
+      // The removal must be instant so the *old* content ('a:1') does not linger
+      // animating out at its old slot — that lingering stale row was the flicker.
+      controller.add(
+        ViewChanges([ViewRowRemoved(0, _row('a', 1)), ViewRowInserted(1, _row('a', 2))]),
+      );
+      await tester.pump(); // deliver the event, start animations
+      await tester.pump(const Duration(milliseconds: 50)); // well before 300ms
+
+      // Old content is already gone (instant removal); only the moved row's new
+      // content is present. Against the pre-fix code 'a:1' would still be fading.
+      expect(find.text('a:1'), findsNothing);
+      expect(find.text('a:2'), findsOneWidget);
+
+      await tester.pumpAndSettle();
+      expect(find.text('a:1'), findsNothing);
+      expect(find.text('a:2'), findsOneWidget);
+      expect(find.byType(Text), findsNWidgets(2));
+    },
+  );
+
   testWidgets('AnimatedViewList resets on a later snapshot', (tester) async {
     final controller = StreamController<ViewUpdate>();
     addTearDown(controller.close);

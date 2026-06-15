@@ -51,6 +51,9 @@ mixin UseDartCouchMixin {
     bool revs = false,
     bool revsInfo = false,
     bool attachments = false,
+    bool conflicts = false,
+    bool deletedConflicts = false,
+    bool meta = false,
   });
 
   Future<ViewResult?> query(

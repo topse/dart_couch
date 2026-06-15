@@ -5,16 +5,33 @@ import 'package:dart_couch/dart_couch.dart';
 import 'package:test/test.dart';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
-import 'package:path/path.dart' as path;
 
 final _log = Logger('dart_couch-test-couch_test_manager');
 
 class CouchTestManager {
   final String couchDbImage = 'couchdb:latest';
-  static const String uri = 'http://localhost:5984';
+
+  /// Label applied to this suite's CouchDB container (see helper.dart).
+  static const String testContainerLabel = 'dart_couch_test';
   static const String testDbName = 'couch_test_db';
   static const String adminUser = 'admin';
   static const String adminPassword = 'admin';
+
+  /// Host port Docker assigned to this suite's container, set in [init].
+  int? _port;
+
+  /// Base URI of this suite's CouchDB container. Dynamic so multiple suites
+  /// can run in parallel, each on its own Docker-assigned port.
+  String get uri {
+    final port = _port;
+    if (port == null) {
+      throw StateError(
+        'CouchTestManager.uri accessed before init() started a '
+        'container.',
+      );
+    }
+    return 'http://localhost:$port';
+  }
 
   String? dockerid;
   Directory? _localPath;
@@ -36,25 +53,30 @@ class CouchTestManager {
 
   bool _isCouchDbPaused = false;
 
+  /// Opt-in conflict resolver forwarded to the [OfflineFirstServer] created by
+  /// [offlineServer]. Set it BEFORE the first [offlineServer]/[offlineDb] call
+  /// (the server is created lazily). `null` (default) preserves conflicts
+  /// exactly like CouchDB. Reset to null between tests by [_cleanupHelper].
+  DocumentConflictResolver? conflictResolver;
+
   CouchTestManager({this.migration});
 
   /// call in setUpAll to initialize resources
   Future<void> init() async {
     _log.info('CouchTestManager.init()');
-    await _shutdownAllCouchDbContainers();
     dockerid = await _startCouchDb(adminUser, adminPassword, false);
 
     _localPath = _prepareSqliteDir();
     _log.info('Prepared SQLite directory at $_localPath');
-    _log.info('CouchDB container started with ID: $dockerid');
+    _log.info('CouchDB container started with ID: $dockerid on $uri');
   }
 
   /// call in tearDownAll to clean up resources
   Future<void> dispose() async {
     _log.info('CouchTestManager.dispose()');
     await _shutdownCouchDb(dockerid!);
-    await _shutdownAllCouchDbContainers();
     dockerid = null;
+    _port = null;
     _log.info('CouchDB container shutdown and cleaned up');
   }
 
@@ -94,6 +116,7 @@ class CouchTestManager {
     _localDb = null;
     _isOfflineFirstServerPaused = false;
     migration = null;
+    conflictResolver = null;
   }
 
   /// Stops the Docker container to simulate network outage.
@@ -180,7 +203,10 @@ class CouchTestManager {
       );
     }
     if (_offlineFirstServer == null) {
-      _offlineFirstServer = OfflineFirstServer(migration: migration);
+      _offlineFirstServer = OfflineFirstServer(
+        migration: migration,
+        conflictResolver: conflictResolver,
+      );
       final loginResult = await _offlineFirstServer!.login(
         uri,
         adminUser,
@@ -223,28 +249,67 @@ class CouchTestManager {
     return _localDb!;
   }
 
-  Future<void> _shutdownAllCouchDbContainers() async {
-    ProcessResult result = await Process.run('docker', ['ps']);
-    if (result.exitCode != 0) {
-      throw ('Failed to list containers: ${result.stderr}');
+  /// Finds a free host port by binding an ephemeral socket, reading the
+  /// OS-assigned port, then releasing it. Containers are started with an
+  /// explicit `-p <port>:5984` mapping (not Docker's `0:5984`) so the port
+  /// survives `docker stop`/`docker start` for pause/resume. Shared with
+  /// helper.dart's `startCouchDb`.
+  ///
+  /// `bind(0)` only guarantees the port is free *right now* on the OS — it
+  /// could still belong to a **stopped** container whose mapping is invisible
+  /// at the socket level. Reusing such a port would let two containers be bound
+  /// to it once both are started/restarted. So we also exclude every host port
+  /// already claimed by any existing Docker container (running or stopped) via
+  /// [_dockerReservedHostPorts] and re-roll until we get one nobody owns. This
+  /// keeps all test containers mutually restartable.
+  ///
+  /// A tiny window still remains between releasing the socket and Docker
+  /// binding the port (a concurrently-starting sibling's container doesn't
+  /// exist yet, so it isn't in the reserved set); on that rare collision
+  /// `docker run` fails loudly with "port is already allocated" and the caller
+  /// re-allocates and retries (see [_startCouchDb]).
+  static Future<int> findFreePort() async {
+    final reserved = await _dockerReservedHostPorts();
+    for (var attempt = 0; attempt < 50; attempt++) {
+      final socket = await ServerSocket.bind(InternetAddress.loopbackIPv4, 0);
+      final port = socket.port;
+      await socket.close();
+      if (!reserved.contains(port)) return port;
     }
-    final containers = result.stdout.toString().trim().split('\n');
-    for (int i = 1; i < containers.length; i++) {
-      final fields = containers[i].split(RegExp(r'\s+'));
-      if (fields[1] == couchDbImage) {
-        await _shutdownCouchDb(fields[0]);
-      }
-    }
+    throw ('findFreePort: could not find a host port that is both OS-free and '
+        'unclaimed by any existing Docker container after 50 attempts');
+  }
 
-    result = await Process.run('docker', ['container', 'prune']);
-    if (result.exitCode != 0) {
-      throw ('Failed to prune container: ${result.stderr}');
+  /// Host ports already claimed by *any* existing Docker container, running or
+  /// stopped. Read from each container's creation-time `HostConfig.PortBindings`
+  /// (not the live `docker port`, which is empty while a container is stopped)
+  /// so leftover/stopped containers count too. Returns an empty set when Docker
+  /// is unavailable or has no containers — callers then fall back to OS-only
+  /// free-port detection.
+  static Future<Set<int>> _dockerReservedHostPorts() async {
+    final ids = await Process.run('docker', ['ps', '-aq']);
+    if (ids.exitCode != 0) return {};
+    final idList = ids.stdout
+        .toString()
+        .trim()
+        .split('\n')
+        .map((l) => l.trim())
+        .where((l) => l.isNotEmpty)
+        .toList();
+    if (idList.isEmpty) return {};
+    final inspect = await Process.run('docker', [
+      'inspect',
+      '--format',
+      r'{{range $p, $conf := .HostConfig.PortBindings}}{{range $conf}}{{.HostPort}} {{end}}{{end}}',
+      ...idList,
+    ]);
+    if (inspect.exitCode != 0) return {};
+    final ports = <int>{};
+    for (final tok in inspect.stdout.toString().split(RegExp(r'\s+'))) {
+      final p = int.tryParse(tok.trim());
+      if (p != null) ports.add(p);
     }
-    result = await Process.run('docker', ['volume', 'prune']);
-    if (result.exitCode != 0) {
-      throw ('Failed to prune volume: ${result.stderr}');
-    }
-    _log.info('Docker container prune completed.');
+    return ports;
   }
 
   Future<String> _startCouchDb(
@@ -252,26 +317,53 @@ class CouchTestManager {
     String password,
     bool logCouchDB,
   ) async {
+    // Self-allocate an explicit host port instead of Docker's `-p 0:5984`.
+    // Docker re-assigns a NEW random host port on every `docker start`, which
+    // breaks pause/resume: the long-lived OfflineFirstServer (and the URI we
+    // poll in _waitForCouchDb) would point at the old, now-dead port. An
+    // explicit `-p <port>:5984` mapping is preserved across stop/start, so the
+    // port stays stable for the lifetime of the container.
+    //
+    // The free port is found via [findFreePort], which leaves a tiny window
+    // where another suite/process could grab it before `docker run` binds it.
+    // On that rare collision Docker fails with "port is already allocated"; we
+    // re-allocate a fresh port and retry rather than failing the whole suite.
     String dockerid = "";
-    ProcessResult result = await Process.run('docker', [
-      'run',
-      '-e',
-      'COUCHDB_USER=$adminUser',
-      '-e',
-      'COUCHDB_PASSWORD=$password',
-      '-d',
-      '-p',
-      '5984:5984',
-      '--mount',
-      'type=bind,src=${Directory.current.absolute.path}/couchdb-test-config,dst=/opt/couchdb/etc/local.d/',
-      couchDbImage,
-    ]);
-    if (result.exitCode != 0) {
-      throw ('Failed to start container: ${result.stderr}');
+    ProcessResult result;
+    const maxPortAttempts = 5;
+    for (var attempt = 1; ; attempt++) {
+      _port = await findFreePort();
+      result = await Process.run('docker', [
+        'run',
+        '-e',
+        'COUCHDB_USER=$adminUser',
+        '-e',
+        'COUCHDB_PASSWORD=$password',
+        '-d',
+        '--label',
+        testContainerLabel,
+        '-p',
+        '$_port:5984',
+        '--mount',
+        'type=bind,src=${Directory.current.absolute.path}/couchdb-test-config,dst=/opt/couchdb/etc/local.d/',
+        couchDbImage,
+      ]);
+      if (result.exitCode == 0) break;
+      final stderr = result.stderr.toString();
+      final portTaken =
+          stderr.contains('port is already allocated') ||
+          stderr.contains('address already in use');
+      if (!portTaken || attempt >= maxPortAttempts) {
+        throw ('Failed to start container: $stderr');
+      }
+      _log.info(
+        'Port $_port was taken before docker could bind it '
+        '(attempt $attempt/$maxPortAttempts), retrying with a new port...',
+      );
     }
     dockerid = result.stdout.toString().trim();
     // Wait for CouchDB to start
-    _log.info('Waiting for CouchDB to start...');
+    _log.info('Waiting for CouchDB to start on $uri ...');
     await _waitForCouchDb(dockerid);
 
     if (logCouchDB) {
@@ -281,7 +373,9 @@ class CouchTestManager {
     try {
       // need to create _global_changes database, its not done automatically...??
       final createDbRes = await http.put(
-        Uri.parse("http://$adminUser:$password@localhost:5984/_global_changes"),
+        Uri.parse(
+          "http://$adminUser:$password@localhost:$_port/_global_changes",
+        ),
       );
       if (createDbRes.statusCode != 201) {
         throw ('Failed to create _global_changes database: ${createDbRes.body}');
@@ -303,20 +397,13 @@ class CouchTestManager {
     _log.info('$dockerid stopped.');
     _couchLogProcess?.kill();
     _couchLogProcess = null;
-    result = await Process.run('docker', ['container', 'remove', dockerid]);
+    // Remove only this container and its anonymous volumes — no global prune,
+    // which would clobber containers of parallel suites.
+    result = await Process.run('docker', ['rm', '-fv', dockerid]);
     if (result.exitCode != 0) {
       throw ('Failed to remove container: ${result.stderr}');
     }
     _log.info('$dockerid removed.');
-    result = await Process.run('docker', ['container', 'prune']);
-    if (result.exitCode != 0) {
-      throw ('Failed to prune container: ${result.stderr}');
-    }
-    result = await Process.run('docker', ['volume', 'prune']);
-    if (result.exitCode != 0) {
-      throw ('Failed to prune volume: ${result.stderr}');
-    }
-    _log.info('Docker container prune completed.');
   }
 
   Future<void> _waitForCouchDbShutdown(
@@ -344,7 +431,7 @@ class CouchTestManager {
     _log.info('CouchDB container is shutdown, id: $dockerid');
   }
 
-  Future<void> _waitForCouchDb(String dockerid, [int maxAttempts = 30]) async {
+  Future<void> _waitForCouchDb(String dockerid, [int maxAttempts = 60]) async {
     int attempts = 0;
     while (attempts < maxAttempts) {
       try {
@@ -390,14 +477,9 @@ class CouchTestManager {
   }
 
   Directory _prepareSqliteDir() {
-    // as we are in Linux, directories can be deleted even if still in use by another process
-    final dirPath = path.join(Directory.systemTemp.path, 'dart_couch');
-    final dir = Directory(dirPath);
-
-    if (dir.existsSync()) {
-      dir.deleteSync(recursive: true);
-    }
-
-    return dir;
+    // Fresh, uniquely-named temp dir per call so parallel suites never share a
+    // SQLite path (drift only conflicts on the same file). createTempSync gives
+    // a race-free unique name, replacing the old fixed `dart_couch` dir.
+    return Directory.systemTemp.createTempSync('dart_couch_');
   }
 }

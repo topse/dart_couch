@@ -1,3 +1,6 @@
+## 1.0.0
+* add conflict resolver
+
 ## 0.9.26
 * Add diff API: useViewWithChanges and useAllDocsWithChanges to enable better ui updates
 

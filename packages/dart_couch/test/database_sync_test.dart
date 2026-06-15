@@ -46,7 +46,7 @@ void main() {
 
       // Login with OfflineFirstServer
       final result = await offlineFirstServer.login(
-        'http://localhost:5984',
+        couchUri,
         'admin',
         'admin',
         localFile,
@@ -82,7 +82,7 @@ void main() {
     test('Database creation during login is detected by stream', () async {
       // Login first
       await offlineFirstServer.login(
-        'http://localhost:5984',
+        couchUri,
         'admin',
         'admin',
         localFile,
@@ -108,7 +108,7 @@ void main() {
     test('Database deletion is synchronized via tombstone mechanism', () async {
       // Create database through OfflineFirstServer to establish proper markers
       await offlineFirstServer.login(
-        'http://localhost:5984',
+        couchUri,
         'admin',
         'admin',
         localFile,
@@ -164,7 +164,7 @@ void main() {
 
         // Login - this triggers sync
         await offlineFirstServer.login(
-          'http://localhost:5984',
+          couchUri,
           'admin',
           'admin',
           localFile,
@@ -205,7 +205,7 @@ void main() {
 
       // Login
       await offlineFirstServer.login(
-        'http://localhost:5984',
+        couchUri,
         'admin',
         'admin',
         localFile,

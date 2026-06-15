@@ -6,7 +6,6 @@ import 'package:crypto/crypto.dart';
 import 'package:test/test.dart';
 import 'package:dart_couch/dart_couch.dart';
 import 'dart:convert';
-import 'package:logging/logging.dart';
 
 import 'helper/bulk_docs_test_helper.dart';
 import 'helper/helper.dart';
@@ -16,14 +15,7 @@ import 'helper/changes_test_helper.dart';
 void main() {
   DartCouchDb.ensureInitialized();
 
-  Logger.root.level = Level.FINEST; // defaults to Level.INFO
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   group('HTTP', () {
     doTest(setUpAllHttpFunction, tearDownAllHttpFunction);
@@ -192,6 +184,814 @@ void doTest(
       (e) => e.dbname.startsWith("_") == false,
     );
     expect(databases, isEmpty);
+  });
+
+  // PLAN.md Phase 0 — conflict handling parity. doTest runs each case against
+  // BOTH the Http and Local server, so these verify the two implementations
+  // answer identically for a conflicted document. The conflict is injected
+  // directly via bulkDocsRaw(newEdits:false) (the replication-protocol path):
+  // two leaf revisions at the same generation sharing one ancestor. CouchDB's
+  // winner rule at equal generation is "higher rev hash wins", so revB ('b…')
+  // beats revA ('a…'); revA is the conflicting (losing) leaf.
+  //
+  // Empirically (Phase 0):
+  //  - P1 winner parity: GREEN on both.
+  //  - P3 revsDiff parity: GREEN on both — Local DOES record the conflict leaf
+  //    rev in its revision history, so it does NOT re-request it. This corrects
+  //    the earlier "re-pull churn for fetchable leaves" assumption: that churn
+  //    does not occur. (Bodyless not_found leaves are a separate matter.)
+  //  - P2 conflict-listing parity: RED on Local — it keeps only the winner's
+  //    body and exposes no `_conflicts`. This is the genuine Phase 1 gap
+  //    (conflict visibility so the app/resolver can see and resolve conflicts).
+  group('conflict handling parity (Http vs Local)', () {
+    const dbName = 'conflict_parity_db';
+    const docId = 'conflictdoc';
+    const ancestor = 'cccccccccccccccccccccccccccccccc';
+    const hashA = 'aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa';
+    const hashB = 'bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb';
+    const revA = '2-$hashA';
+    const revB = '2-$hashB';
+    const winnerRev = revB;
+    const loserRev = revA;
+
+    Future<DartCouchDb> setupConflict() async {
+      // Fresh DB each time, robust against a prior failed test leaving it.
+      if ((await cl.db(dbName)) != null) await cl.deleteDatabase(dbName);
+      final db = await cl.createDatabase(dbName);
+      final docA = jsonEncode({
+        '_id': docId,
+        '_rev': revA,
+        'branch': 'A',
+        '_revisions': {
+          'start': 2,
+          'ids': [hashA, ancestor],
+        },
+      });
+      final docB = jsonEncode({
+        '_id': docId,
+        '_rev': revB,
+        'branch': 'B',
+        '_revisions': {
+          'start': 2,
+          'ids': [hashB, ancestor],
+        },
+      });
+      await db.bulkDocsRaw([docA, docB], newEdits: false);
+      return db;
+    }
+
+    test('P1 winning revision is deterministic (higher hash wins)', () async {
+      final db = await setupConflict();
+      final doc = await db.getRaw(docId);
+      expect(doc, isNotNull);
+      expect(doc!['_rev'], winnerRev);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('P2 get(conflicts:true) lists the conflicting leaf', () async {
+      final db = await setupConflict();
+      final doc = await db.getRaw(docId, conflicts: true);
+      expect(doc, isNotNull);
+      expect(doc!['_rev'], winnerRev);
+      expect(
+        doc['_conflicts'],
+        isNotNull,
+        reason: 'conflicts:true must surface the losing leaf revision',
+      );
+      expect((doc['_conflicts'] as List).cast<String>(), [loserRev]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('P3 revsDiff does not report known conflict leaves as missing', () async {
+      final db = await setupConflict();
+      final diff = await db.revsDiff({
+        docId: [winnerRev, loserRev],
+      });
+      final missing = diff[docId]?.missing ?? const <String>[];
+      expect(
+        missing,
+        isEmpty,
+        reason:
+            'both leaf revs are known to the DB; revsDiff must not report them '
+            'missing (otherwise the puller would re-fetch on every change). '
+            'GREEN on both: Local records conflict leaf revs even though it '
+            'keeps only the winner body — so no re-pull churn for fetchable '
+            'leaves.',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+  });
+
+  // PLAN.md Phase 1 — leaf-set algorithm parity. Stress-tests the conflict
+  // leaf-set maintenance against the many cases the simple P1/P2/P3 group does
+  // not: linear updates (must NOT conflict), demote-on-win, supersession,
+  // 3-way conflicts, lower-generation siblings, deleted conflicts, order
+  // independence, and get(rev:X). Every case runs against BOTH Http and Local
+  // (newEdits=false injection with explicit `_revisions` chains), so any Local
+  // divergence from CouchDB fails the test.
+  group('conflict leaf set (Http vs Local)', () {
+    const dbName = 'conflict_leafset_db';
+    const docId = 'd';
+
+    // 32-hex-char hash from a short hex tag (CouchDB rev hashes are 32 hex).
+    String hx(String tag) => tag.padRight(32, '0');
+    String rv(int gen, String tag) => '$gen-${hx(tag)}';
+
+    Future<DartCouchDb> freshDb() async {
+      if ((await cl.db(dbName)) != null) await cl.deleteDatabase(dbName);
+      return cl.createDatabase(dbName);
+    }
+
+    // Inject one leaf via the replication path. [idTags] is the rev-hash chain
+    // newest-first (this rev's tag first, then its ancestors).
+    Future<void> inject(
+      DartCouchDb db,
+      int start,
+      List<String> idTags, {
+      bool deleted = false,
+    }) async {
+      final ids = idTags.map(hx).toList();
+      final doc = <String, dynamic>{
+        '_id': docId,
+        '_rev': '$start-${ids.first}',
+        '_revisions': {'start': start, 'ids': ids},
+        'val': idTags.first,
+      };
+      if (deleted) doc['_deleted'] = true;
+      await db.bulkDocsRaw([jsonEncode(doc)], newEdits: false);
+    }
+
+    // Inject one leaf carrying a single inline (base64) attachment via the
+    // replication path — exercises conflict-leaf attachment storage (Stage 2).
+    // application/octet-stream avoids CouchDB gzip so the stored bytes are exact.
+    Future<void> injectWithAtt(
+      DartCouchDb db,
+      int start,
+      List<String> idTags, {
+      required String attName,
+      required List<int> attData,
+    }) async {
+      final ids = idTags.map(hx).toList();
+      final doc = <String, dynamic>{
+        '_id': docId,
+        '_rev': '$start-${ids.first}',
+        '_revisions': {'start': start, 'ids': ids},
+        'val': idTags.first,
+        '_attachments': {
+          attName: {
+            'content_type': 'application/octet-stream',
+            'data': base64Encode(attData),
+          },
+        },
+      };
+      await db.bulkDocsRaw([jsonEncode(doc)], newEdits: false);
+    }
+
+    Future<String?> winner(DartCouchDb db) async =>
+        (await db.getRaw(docId))?['_rev'];
+    Future<List<String>> conflictsOf(DartCouchDb db) async =>
+        ((await db.getRaw(docId, conflicts: true))?['_conflicts'] as List?)
+            ?.cast<String>()
+            .toList() ??
+        <String>[];
+
+    // Inject one or more leaves through the multipart replication write path
+    // (bulkDocsFromMultipart → the no-attachment fast path on Local). Passing
+    // several leaves in one call exercises the in-batch duplicate case.
+    Future<void> injectMultipart(
+      DartCouchDb db,
+      List<({int start, List<String> idTags})> leaves,
+    ) async {
+      final docs = leaves.map((l) {
+        final ids = l.idTags.map(hx).toList();
+        return BulkGetMultipartSuccess(
+          BulkGetMultipartOk(
+            doc: {
+              '_id': docId,
+              '_rev': '${l.start}-${ids.first}',
+              '_revisions': {'start': l.start, 'ids': ids},
+              'val': l.idTags.first,
+            },
+            attachments: const {},
+          ),
+        );
+      }).toList();
+      await db.bulkDocsFromMultipart(docs, newEdits: false);
+    }
+
+    // Inject ONE leaf carrying a single attachment through the multipart
+    // streaming write path (bulkDocsFromMultipart → the attachment main path on
+    // Local; base64+POST on Http). Exercises _storeStreamConflictAttachments
+    // when the leaf loses, i.e. the real replication path for conflict-leaf
+    // attachments (Stage 2). digest is CouchDB-format md5-<base64> of the raw
+    // bytes (application/octet-stream → no gzip).
+    Future<void> injectMultipartWithAtt(
+      DartCouchDb db,
+      int start,
+      List<String> idTags, {
+      required String attName,
+      required Uint8List attData,
+    }) async {
+      final ids = idTags.map(hx).toList();
+      await db.bulkDocsFromMultipart([
+        BulkGetMultipartSuccess(
+          BulkGetMultipartOk(
+            doc: {
+              '_id': docId,
+              '_rev': '$start-${ids.first}',
+              '_revisions': {'start': start, 'ids': ids},
+              'val': idTags.first,
+            },
+            attachments: {
+              attName: BulkGetMultipartAttachment(
+                contentType: 'application/octet-stream',
+                digest: 'md5-${base64Encode(md5.convert(attData).bytes)}',
+                length: attData.length,
+                revpos: start,
+                data: Stream<List<int>>.fromIterable([attData]),
+              ),
+            },
+          ),
+        ),
+      ], newEdits: false);
+    }
+
+    // REPLICATION_AND_CONFLICT_MODEL.md "View map functions": a view map
+    // function receives the winning revision PLUS a `_conflicts` member when the
+    // document is in conflict, so a view can locate conflicted docs. Must behave
+    // identically on Http (CouchDB) and Local (Phase 6 compliance).
+    test('a view map function sees _conflicts for a conflicted doc', () async {
+      final db = await freshDb();
+      // The canonical conflict-locating view from the spec.
+      await db.putRaw({
+        '_id': '_design/cf',
+        'views': {
+          'conflicts': {
+            'map':
+                'function(doc){ if(doc._conflicts){ '
+                'emit(doc._id, [doc._rev].concat(doc._conflicts)); } }',
+          },
+        },
+      });
+
+      // A plain, non-conflicted doc — must NOT appear in the view.
+      await db.putRaw({'_id': 'plain', 'val': 'x'});
+
+      // Conflict on doc 'd': two same-gen siblings sharing an ancestor.
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']); // higher hash → winner
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+
+      final result = (await db.query('cf/conflicts'))!;
+      final dRows = result.rows.where((r) => r.key == docId).toList();
+      expect(dRows, hasLength(1), reason: 'conflicted doc must emit');
+      expect(
+        result.rows.any((r) => r.key == 'plain'),
+        isFalse,
+        reason: 'non-conflicted doc must not emit',
+      );
+      // Value = [winnerRev, ...conflictRevs] per the map function.
+      final value = (dRows.first.value as List).cast<String>();
+      expect(value, containsAll([rv(2, 'b'), rv(2, 'a')]));
+
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('linear update does NOT create a conflict', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['b', 'ba5e']);
+      await inject(db, 3, ['c', 'b', 'ba5e']); // child of 2-b
+      expect(await winner(db), rv(3, 'c'));
+      expect(await conflictsOf(db), isEmpty);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('two siblings → one conflict; higher hash wins', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']); // sibling, higher hash → wins
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('order independence: loser-first vs winner-first converge', () async {
+      final db1 = await freshDb();
+      await inject(db1, 2, ['a', 'ba5e']); // becomes winner first
+      await inject(db1, 2, ['b', 'ba5e']); // wins, demotes 2-a
+      final w1 = await winner(db1);
+      final c1 = await conflictsOf(db1);
+      await cl.deleteDatabase(dbName);
+
+      final db2 = await freshDb();
+      await inject(db2, 2, ['b', 'ba5e']); // winner first
+      await inject(db2, 2, ['a', 'ba5e']); // loses → stored as conflict
+      expect(await winner(db2), w1);
+      expect(await conflictsOf(db2), c1);
+      expect(w1, rv(2, 'b'));
+      expect(c1, [rv(2, 'a')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('three-way conflict → two conflicts listed', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      await inject(db, 2, ['c', 'ba5e']); // 2-c highest hash → winner
+      expect(await winner(db), rv(2, 'c'));
+      expect(
+        (await conflictsOf(db))..sort(),
+        [rv(2, 'a'), rv(2, 'b')]..sort(),
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('higher-generation sibling wins; lower-gen sibling is the conflict', () async {
+      final db = await freshDb();
+      await inject(db, 3, ['e', 'd', 'ba5e']); // gen 3 branch
+      await inject(db, 2, ['f', 'ba5e']); // gen 2 sibling branch
+      expect(await winner(db), rv(3, 'e')); // higher generation wins
+      expect(await conflictsOf(db), [rv(2, 'f')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('incoming child supersedes an existing conflict leaf', () async {
+      final db = await freshDb();
+      await inject(db, 3, ['e', 'd', 'ba5e']); // winner gen 3 (hash e)
+      await inject(db, 2, ['f', 'ba5e']); // conflict leaf 2-f
+      expect(await conflictsOf(db), [rv(2, 'f')]);
+      await inject(db, 3, ['a', 'f', 'ba5e']); // child of 2-f; loses to 3-e (e>a)
+      // 2-f superseded by 3-a; 3-a is the conflict now (3-e still winner).
+      expect(await winner(db), rv(3, 'e'));
+      expect(await conflictsOf(db), [rv(3, 'a')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('deleted sibling appears in _deleted_conflicts, not _conflicts', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['b', 'ba5e']); // active winner
+      await inject(db, 2, ['a', 'ba5e'], deleted: true); // deleted sibling
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), isEmpty);
+      final withDel = await db.getRaw(docId, deletedConflicts: true);
+      expect(
+        (withDel?['_deleted_conflicts'] as List?)?.cast<String>(),
+        [rv(2, 'a')],
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('get(rev:X) returns a conflict leaf body', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['b', 'ba5e']);
+      await inject(db, 2, ['a', 'ba5e']); // conflict leaf 2-a
+      final leaf = await db.getRaw(docId, rev: rv(2, 'a'));
+      expect(leaf, isNotNull);
+      expect(leaf!['_rev'], rv(2, 'a'));
+      expect(leaf['val'], 'a');
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('revsDiff knows all leaves regardless of arrival order', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['b', 'ba5e']); // winner first
+      await inject(db, 2, ['a', 'ba5e']); // conflict
+      final diff = await db.revsDiff({
+        docId: [rv(2, 'a'), rv(2, 'b')],
+      });
+      expect(diff[docId]?.missing ?? const <String>[], isEmpty);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('getOpenRevs returns the full leaf set (winner + conflicts)', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['b', 'ba5e']); // winner
+      await inject(db, 2, ['a', 'ba5e']); // conflict
+      final open = await db.getOpenRevs(docId); // null revisions → "all"
+      final revsReturned = (open ?? [])
+          .map((o) => o.doc?.rev)
+          .whereType<String>()
+          .toSet();
+      expect(revsReturned, {rv(2, 'a'), rv(2, 'b')});
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('deleting the winner promotes the surviving conflict leaf', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']); // conflict-to-be
+      await inject(db, 2, ['b', 'ba5e']); // winner 2-b (higher hash)
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+
+      // Delete the current winner; CouchDB promotes 2-a to winner.
+      await db.remove(docId, rv(2, 'b'));
+      expect(await winner(db), rv(2, 'a'));
+      expect(await conflictsOf(db), isEmpty);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('multipart write path stores conflicts (separate calls)', () async {
+      final db = await freshDb();
+      await injectMultipart(db, [
+        (start: 2, idTags: ['b', 'ba5e']),
+      ]); // new → winner
+      await injectMultipart(db, [
+        (start: 2, idTags: ['a', 'ba5e']),
+      ]); // existing → conflict
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('multipart write path stores in-batch conflicts (one call)', () async {
+      final db = await freshDb();
+      // Both conflicting leaves of one doc in a single bulkDocsFromMultipart
+      // call — exercises the duplicate-docId (per-doc) partition.
+      await injectMultipart(db, [
+        (start: 2, idTags: ['a', 'ba5e']),
+        (start: 2, idTags: ['b', 'ba5e']),
+      ]);
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('linear delete (bulkDocsRaw) tombstones the document', () async {
+      final db = await freshDb();
+      await inject(db, 1, ['a']); // create 1-a
+      await inject(db, 2, ['d', 'a'], deleted: true); // delete (child of 1-a)
+      expect(await db.getRaw(docId), isNull);
+      expect(await conflictsOf(db), isEmpty);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('delete-only doc (deletion arrives first/alone) is a tombstone', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['d', 'a'], deleted: true); // only the deletion
+      expect(await db.getRaw(docId), isNull);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('deletion arriving after the doc was already created tombstones it', () async {
+      final db = await freshDb();
+      await injectMultipart(db, [
+        (start: 1, idTags: ['a']),
+      ]); // create via multipart fast path
+      // delete via multipart fast path (child of 1-a)
+      await db.bulkDocsFromMultipart([
+        BulkGetMultipartSuccess(
+          BulkGetMultipartOk(
+            doc: {
+              '_id': docId,
+              '_rev': '2-${hx('d')}',
+              '_deleted': true,
+              '_revisions': {
+                'start': 2,
+                'ids': [hx('d'), hx('a')],
+              },
+            },
+            attachments: const {},
+          ),
+        ),
+      ], newEdits: false);
+      expect(await db.getRaw(docId), isNull);
+      expect(await conflictsOf(db), isEmpty);
+      await cl.deleteDatabase(dbName);
+    });
+
+    // ── Deferred edge cases (PLAN.md §0.2) ──────────────────────────────────
+    // A second, harder batch of leaf-set parity cases. Same injection model
+    // (newEdits=false with explicit `_revisions` chains); every case runs
+    // against BOTH Http and Local so any Local divergence from CouchDB fails.
+
+    Future<List<String>> deletedConflictsOf(DartCouchDb db) async =>
+        ((await db.getRaw(docId, deletedConflicts: true))?['_deleted_conflicts']
+                    as List?)
+                ?.cast<String>()
+                .toList() ??
+            <String>[];
+
+    test('re-delivering the same leaves is idempotent', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+      // Re-deliver both leaves: the leaf set must not grow (no duplicate rows).
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      expect(await winner(db), rv(2, 'b'));
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('four-way conflict → three conflicts listed', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      await inject(db, 2, ['c', 'ba5e']);
+      await inject(db, 2, ['d', 'ba5e']); // 2-d highest hash → winner
+      expect(await winner(db), rv(2, 'd'));
+      expect(
+        (await conflictsOf(db))..sort(),
+        [rv(2, 'a'), rv(2, 'b'), rv(2, 'c')]..sort(),
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('default get() returns the winner only; no _conflicts leak', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      final doc = (await db.getRaw(docId))!; // no conflicts/meta flags
+      expect(doc['_rev'], rv(2, 'b'));
+      expect(
+        doc.containsKey('_conflicts'),
+        isFalse,
+        reason: 'a plain get must not expose _conflicts (CouchDB parity)',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('meta:true surfaces _conflicts and _revs_info', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      final doc = (await db.getRaw(docId, meta: true))!;
+      expect(doc['_rev'], rv(2, 'b'));
+      expect((doc['_conflicts'] as List?)?.cast<String>(), [rv(2, 'a')]);
+      expect(
+        doc['_revs_info'],
+        isNotNull,
+        reason: 'meta is shorthand for conflicts + deleted_conflicts + revs_info',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('revsDiff reports an unknown rev missing while known leaves are not', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      final diff = await db.revsDiff({
+        docId: [rv(2, 'a'), rv(2, 'b'), rv(2, 'f')], // 2-f was never delivered
+      });
+      expect(diff[docId]?.missing ?? const <String>[], [rv(2, 'f')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('winner advances linearly; existing conflict leaf is preserved', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']); // conflict-to-be
+      await inject(db, 2, ['b', 'ba5e']); // winner
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+      await inject(db, 3, ['c', 'b', 'ba5e']); // child of winner 2-b
+      expect(await winner(db), rv(3, 'c'));
+      expect(
+        await conflictsOf(db),
+        [rv(2, 'a')],
+        reason: 'a linear advance of the winner must not disturb the conflict',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('conflict branch grows past the winner and becomes the new winner', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']); // loser leaf
+      await inject(db, 2, ['b', 'ba5e']); // winner
+      expect(await winner(db), rv(2, 'b'));
+      // Extend the losing branch to gen 3 → outranks 2-b by generation.
+      await inject(db, 3, ['c', 'a', 'ba5e']); // child of 2-a
+      expect(await winner(db), rv(3, 'c'));
+      expect(
+        await conflictsOf(db),
+        [rv(2, 'b')],
+        reason: 'the old winner 2-b is demoted to a conflict leaf',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('get(rev:X) serves the correct body for winner and conflict', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']); // val 'a'
+      await inject(db, 2, ['b', 'ba5e']); // val 'b' (winner)
+      expect((await db.getRaw(docId, rev: rv(2, 'b')))!['val'], 'b');
+      expect((await db.getRaw(docId, rev: rv(2, 'a')))!['val'], 'a');
+      expect(
+        (await db.getRaw(docId))!['val'],
+        'b',
+        reason: 'a plain get returns the winner body',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('getOpenRevs with explicit revisions returns each requested leaf', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      final open = await db.getOpenRevs(
+        docId,
+        revisions: [rv(2, 'a'), rv(2, 'b')],
+      );
+      final revsReturned = (open ?? [])
+          .where((o) => o.state == OpenRevsState.ok)
+          .map((o) => o.doc?.rev)
+          .whereType<String>()
+          .toSet();
+      expect(revsReturned, {rv(2, 'a'), rv(2, 'b')});
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('non-deleted leaf beats a higher-gen deleted leaf (deleted first)', () async {
+      final db = await freshDb();
+      // Branch 1: 1-ba5e → 2-d → 3-e (deleted leaf, gen 3).
+      await inject(db, 3, ['e', 'd', 'ba5e'], deleted: true);
+      // Branch 2: 1-ba5e → 2-f (non-deleted leaf, gen 2).
+      await inject(db, 2, ['f', 'ba5e']);
+      expect(
+        await winner(db),
+        rv(2, 'f'),
+        reason: 'a non-deleted leaf wins over a deleted one regardless of gen',
+      );
+      expect(await conflictsOf(db), isEmpty);
+      expect(await deletedConflictsOf(db), [rv(3, 'e')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('non-deleted leaf beats a higher-gen deleted leaf (non-deleted first)', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['f', 'ba5e']); // non-deleted gen-2 first
+      await inject(db, 3, ['e', 'd', 'ba5e'], deleted: true); // deleted gen-3
+      expect(await winner(db), rv(2, 'f'));
+      expect(await conflictsOf(db), isEmpty);
+      expect(
+        await deletedConflictsOf(db),
+        [rv(3, 'e')],
+        reason: 'arrival order must not change the converged leaf set',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('deleting the winner with only deleted leaves remaining stays a tombstone', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']); // non-deleted winner
+      await inject(db, 2, ['b', 'ba5e'], deleted: true); // deleted sibling
+      expect(await winner(db), rv(2, 'a'));
+      // Delete the winner → its branch tombstones; every remaining leaf is now
+      // deleted, so the document must stay deleted (no live leaf to promote).
+      await db.remove(docId, rv(2, 'a'));
+      expect(await db.getRaw(docId), isNull);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('promotion after deleting the winner picks the highest surviving non-deleted leaf', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']);
+      await inject(db, 2, ['c', 'ba5e']); // 2-c winner
+      expect(await winner(db), rv(2, 'c'));
+      await db.remove(docId, rv(2, 'c')); // delete the winner
+      expect(
+        await winner(db),
+        rv(2, 'b'),
+        reason: 'promotion picks the highest-hash surviving non-deleted leaf',
+      );
+      expect(await conflictsOf(db), [rv(2, 'a')]);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('a promoted conflict leaf can then advance linearly', () async {
+      final db = await freshDb();
+      await inject(db, 2, ['a', 'ba5e']);
+      await inject(db, 2, ['b', 'ba5e']); // winner
+      await db.remove(docId, rv(2, 'b')); // promotes 2-a
+      expect(await winner(db), rv(2, 'a'));
+      await inject(db, 3, ['c', 'a', 'ba5e']); // child of the promoted 2-a
+      expect(await winner(db), rv(3, 'c'));
+      expect(await conflictsOf(db), isEmpty);
+      await cl.deleteDatabase(dbName);
+    });
+
+    // ── Conflict-leaf attachments (PLAN.md Phase 1 Stage 2) ─────────────────
+    test('conflict-leaf attachment: getAttachment by winner vs loser rev', () async {
+      final db = await freshDb();
+      final winnerBytes = Uint8List.fromList(utf8.encode('winner-payload-1'));
+      final loserBytes = Uint8List.fromList(utf8.encode('loser-payload-22'));
+      // 2-a (loser) and 2-b (winner) are siblings, each with their own f.bin.
+      await injectWithAtt(db, 2, ['a', 'ba5e'],
+          attName: 'f.bin', attData: loserBytes);
+      await injectWithAtt(db, 2, ['b', 'ba5e'],
+          attName: 'f.bin', attData: winnerBytes);
+      expect(await winner(db), rv(2, 'b'));
+      expect(await db.getAttachment(docId, 'f.bin'), winnerBytes); // default
+      expect(
+        await db.getAttachment(docId, 'f.bin', rev: rv(2, 'b')),
+        winnerBytes,
+      );
+      expect(
+        await db.getAttachment(docId, 'f.bin', rev: rv(2, 'a')),
+        loserBytes,
+        reason: 'the losing leaf\'s own attachment must be retrievable',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('conflict-leaf attachment: get(rev:loser, attachments:true) inlines the loser body', () async {
+      final db = await freshDb();
+      final loserBytes = Uint8List.fromList(utf8.encode('inline-loser-bytes'));
+      await injectWithAtt(db, 2, ['a', 'ba5e'],
+          attName: 'f.bin', attData: loserBytes);
+      await inject(db, 2, ['b', 'ba5e']); // winner without attachment
+      expect(await winner(db), rv(2, 'b'));
+      final leaf = await db.getRaw(docId, rev: rv(2, 'a'), attachments: true);
+      final att = (leaf!['_attachments'] as Map)['f.bin'] as Map;
+      expect(base64Decode(att['data'] as String), loserBytes);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('conflict-leaf attachment: two leaves sharing identical bytes each return them', () async {
+      final db = await freshDb();
+      final shared = Uint8List.fromList(utf8.encode('shared-identical-bytes!'));
+      await injectWithAtt(db, 2, ['a', 'ba5e'],
+          attName: 'f.bin', attData: shared); // loser
+      await injectWithAtt(db, 2, ['b', 'ba5e'],
+          attName: 'f.bin', attData: shared); // winner (identical bytes)
+      expect(await db.getAttachment(docId, 'f.bin', rev: rv(2, 'b')), shared);
+      expect(await db.getAttachment(docId, 'f.bin', rev: rv(2, 'a')), shared);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('promotion keeps the promoted conflict leaf\'s attachment', () async {
+      final db = await freshDb();
+      final loserBytes = Uint8List.fromList(utf8.encode('promote-me-payload'));
+      await injectWithAtt(db, 2, ['a', 'ba5e'],
+          attName: 'f.bin', attData: loserBytes); // loser with attachment
+      await inject(db, 2, ['b', 'ba5e']); // winner without attachment
+      expect(await winner(db), rv(2, 'b'));
+      // Delete the winner → CouchDB promotes the surviving leaf 2-a to winner.
+      await db.remove(docId, rv(2, 'b'));
+      expect(await winner(db), rv(2, 'a'));
+      // The promoted leaf's attachment is now the winner's and still readable.
+      expect(
+        await db.getAttachment(docId, 'f.bin'),
+        loserBytes,
+        reason: 'promotion must carry the promoted leaf\'s attachment forward',
+      );
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('conflict-leaf attachment via the MULTIPART write path', () async {
+      final db = await freshDb();
+      final loserBytes = Uint8List.fromList(utf8.encode('multipart-loser-pl'));
+      // winner 2-b (no attachment) then loser 2-a WITH attachment, both via the
+      // multipart streaming write path (the real replication path).
+      await injectMultipart(db, [
+        (start: 2, idTags: ['b', 'ba5e']),
+      ]);
+      await injectMultipartWithAtt(db, 2, ['a', 'ba5e'],
+          attName: 'm.bin', attData: loserBytes);
+      expect(await winner(db), rv(2, 'b'));
+      expect(
+        await db.getAttachment(docId, 'm.bin', rev: rv(2, 'a')),
+        loserBytes,
+        reason: 'the losing leaf\'s streamed attachment must be retrievable',
+      );
+      final leaf = await db.getRaw(docId, rev: rv(2, 'a'), attachments: true);
+      final att = (leaf!['_attachments'] as Map)['m.bin'] as Map;
+      expect(base64Decode(att['data'] as String), loserBytes);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('conflict-leaf attachment: get(rev:loser) without attachments → stub', () async {
+      final db = await freshDb();
+      final loserBytes = Uint8List.fromList(utf8.encode('stub-parity-bytes'));
+      await injectWithAtt(db, 2, ['a', 'ba5e'],
+          attName: 'f.bin', attData: loserBytes);
+      await inject(db, 2, ['b', 'ba5e']); // winner
+      final leaf = await db.getRaw(docId, rev: rv(2, 'a')); // no attachments:true
+      final att = (leaf!['_attachments'] as Map)['f.bin'] as Map;
+      expect(
+        att.containsKey('data'),
+        isFalse,
+        reason: 'without attachments:true the leaf attachment must be a stub',
+      );
+      expect(att['stub'], isTrue);
+      expect(att['length'], loserBytes.length);
+      await cl.deleteDatabase(dbName);
+    });
+
+    test('getAttachment with an unknown rev returns null (Http parity)', () async {
+      final db = await freshDb();
+      await injectWithAtt(db, 2, ['a', 'ba5e'],
+          attName: 'f.bin', attData: Uint8List.fromList([1, 2, 3]));
+      await inject(db, 2, ['b', 'ba5e']);
+      expect(
+        await db.getAttachment(docId, 'f.bin', rev: rv(9, 'deadbeef')),
+        isNull,
+        reason: 'an unknown rev must yield null (CouchDB 404), not throw',
+      );
+      await cl.deleteDatabase(dbName);
+    });
   });
 
   test('api test openrevs', () async {

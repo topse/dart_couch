@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:dart_couch/dart_couch.dart';
-import 'package:logging/logging.dart';
 
 import 'helper/helper.dart';
 
@@ -29,14 +28,7 @@ String _formatDuration(Duration d) {
 
 void main() {
 
-  Logger.root.level = Level.INFO;
-  Logger.root.onRecord.listen((record) {
-    final ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   late LocalDartCouchServer server;
   late DartCouchDb db;

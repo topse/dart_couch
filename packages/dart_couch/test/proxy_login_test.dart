@@ -1,4 +1,3 @@
-import 'dart:convert';
 import 'dart:io';
 
 import 'package:test/test.dart';
@@ -37,15 +36,21 @@ Future<void> shutdownAllNginxContainers() async {
   _log.info('All nginx containers cleaned up.');
 }
 
-/// Starts an nginx container on port 5984 that returns a 404 HTML page
-/// for all requests, simulating a misconfigured proxy/router.
-Future<String> startNginx() async {
+/// Starts an nginx container that returns a 404 HTML page for all requests,
+/// simulating a misconfigured proxy/router.
+///
+/// It binds to [hostPort] — the same Docker-assigned port the CouchDB container
+/// used before it was torn down — so the OfflineFirstServer (which logged in to
+/// `couchUri`) now reaches nginx at the very same address.
+Future<String> startNginx(int hostPort) async {
   final configDir = '${Directory.current.absolute.path}/nginx-test-config';
   final result = await Process.run('docker', [
     'run',
     '-d',
+    '--label',
+    testContainerLabel,
     '-p',
-    '5984:5984',
+    '$hostPort:5984',
     '--mount',
     'type=bind,src=$configDir,dst=/etc/nginx/conf.d/',
     _nginxImage,
@@ -54,13 +59,13 @@ Future<String> startNginx() async {
     throw 'Failed to start nginx container: ${result.stderr}';
   }
   final containerId = result.stdout.toString().trim();
-  _log.info('Nginx container started: $containerId');
+  _log.info('Nginx container started: $containerId on port $hostPort');
 
   // Wait for nginx to be ready (accepting connections)
   int attempts = 0;
   while (attempts < 30) {
     try {
-      final response = await http.get(Uri.parse('http://localhost:5984'));
+      final response = await http.get(Uri.parse('http://localhost:$hostPort'));
       if (response.statusCode == 404) {
         _log.info('Nginx is up and returning 404.');
         break;
@@ -77,14 +82,7 @@ Future<String> startNginx() async {
 }
 
 void main() {
-  Logger.root.level = Level.FINEST;
-  Logger.root.onRecord.listen((record) {
-    final ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   // Always clean up nginx containers, even if the test fails or throws.
   tearDown(() async {
@@ -100,11 +98,15 @@ void main() {
       HttpDartCouchServer httpServer =
           await setUpAllHttpFunction() as HttpDartCouchServer;
 
+      // Remember the Docker-assigned port so nginx can later reuse it (it
+      // survives tearDownAllHttpFunction, which does not reset couchPort).
+      final couchDbPort = couchPort!;
+
       final ofs = OfflineFirstServer();
 
       // Login to OfflineFirstServer while CouchDB is online
       final loginResult = await ofs.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localPath,
@@ -157,13 +159,13 @@ void main() {
 
       _log.info('Phase 2 complete: OfflineFirstServer disposed, CouchDB down.');
 
-      // --- Phase 3: Start nginx on port 5984 returning 404 HTML ---
-      final nginxId = await startNginx();
+      // --- Phase 3: Start nginx on the freed CouchDB port returning 404 HTML ---
+      final nginxId = await startNginx(couchDbPort);
       _log.info('Nginx container ID: $nginxId');
 
       // Verify nginx is responding with HTML 404 (not CouchDB JSON)
       final probeResponse = await http.post(
-        Uri.parse('http://localhost:5984/_session'),
+        Uri.parse('$couchUri/_session'),
         headers: {'Content-Type': 'application/json'},
         body: '{"name":"admin","password":"admin"}',
       );
@@ -175,14 +177,14 @@ void main() {
       );
 
       _log.info(
-        'Phase 3 complete: Nginx running on port 5984 returning HTML 404.',
+        'Phase 3 complete: Nginx running on port $couchDbPort returning HTML 404.',
       );
 
       // --- Phase 4: Restart OfflineFirstServer with nginx answering ---
       final ofs2 = OfflineFirstServer();
 
       final loginResult2 = await ofs2.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localPath,

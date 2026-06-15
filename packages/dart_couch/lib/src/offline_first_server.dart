@@ -331,16 +331,25 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
 
   DatabaseMigration? migration;
 
-  final DocumentReplicationConflictResolver documentReplicationConflictResolver;
+  /// Opt-in conflict resolver (Decision B/C), forwarded to every
+  /// [OfflineFirstDb] this server creates. `null` (default) preserves
+  /// conflicts exactly like CouchDB; pass e.g. [KeepWinnerResolver] to opt in.
+  final DocumentConflictResolver? conflictResolver;
 
-  // TODO: it seems the DocumentReplicationConflictResolver is never used, maybe remove it?
+  /// How often health monitoring polls the server (session validity + back-
+  /// online recovery). `null` (default) keeps the built-in 5 s. Raising it (e.g.
+  /// `Duration(seconds: 15)`) cuts polling and log noise at the cost of slightly
+  /// slower automatic recovery after a network blip — purely a latency/cost
+  /// trade-off, no correctness impact (the changes feed has its own heartbeat and
+  /// a failed request re-logs in immediately).
+  final Duration? healthCheckInterval;
+
   OfflineFirstServer({
     this.migration,
     this.existingDatabaseSyncingStrategy = ExistingDatabasesSyncStrategie.merge,
-    DocumentReplicationConflictResolver? documentReplicationConflictResolver,
-  }) : documentReplicationConflictResolver =
-           documentReplicationConflictResolver ??
-           DefaultConflictResolver.instance;
+    this.conflictResolver,
+    this.healthCheckInterval,
+  });
 
   bool? _canAllDbs;
 
@@ -978,7 +987,7 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
             // Since we have cached credentials, this is not a first-time login
             // Always transition to normalOffline when using cached credentials
             state.value = OfflineFirstServerState.normalOffline;
-            startHealthMonitoring();
+            startHealthMonitoring(interval: healthCheckInterval);
             return res;
           } else {
             // different credentials than last at successful login
@@ -1012,7 +1021,7 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
             loginStateDoc.hashedPassword == _credentialHash(password)) {
           state.value =
               .normalOffline; // maybe normalTryingToConnect? Then our GUI may change to CircularProgressBar?
-          startHealthMonitoring();
+          startHealthMonitoring(interval: healthCheckInterval);
         } else {
           // First time login with these credentials failed with server error
           state.value = .unititialized;
@@ -1035,7 +1044,7 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
         );
 
         // Start health monitoring (but don't set normalOnline yet)
-        startHealthMonitoring();
+        startHealthMonitoring(interval: healthCheckInterval);
 
         // Only sync databases and start _db_updates stream if user has allDbs permission
         if (canAllDbs) {
@@ -1288,7 +1297,7 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
 
       // Restart health monitoring timer
       _log.fine('Restarting health monitoring');
-      startHealthMonitoring();
+      startHealthMonitoring(interval: healthCheckInterval);
 
       // Restart the HTTP session keep-alive timer that was suspended in
       // pause(). Only has effect if the user is still logged in; if the
@@ -1496,7 +1505,7 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
         registerRecoveryCallback: registerRecoveryCallback,
         unregisterRecoveryCallback: unregisterRecoveryCallback,
         migration: migration,
-        conflictResolver: documentReplicationConflictResolver,
+        conflictResolver: conflictResolver,
       );
       await offline.init();
       _dbCache[name] = offline;
@@ -1691,7 +1700,7 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
         registerRecoveryCallback: registerRecoveryCallback,
         unregisterRecoveryCallback: unregisterRecoveryCallback,
         migration: migration,
-        conflictResolver: documentReplicationConflictResolver,
+        conflictResolver: conflictResolver,
       );
       await offline.init();
       _dbCache[name] = offline;

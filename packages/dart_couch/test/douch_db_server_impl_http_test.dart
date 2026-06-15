@@ -1,9 +1,7 @@
 import 'package:test/test.dart';
 
 import 'package:dart_couch/dart_couch.dart';
-import 'dart:convert';
 
-import 'package:logging/logging.dart';
 
 import 'helper/helper.dart';
 
@@ -12,14 +10,7 @@ final bool LOG_COUCH_DB = false;
 
 void main() {
   //hierarchicalLoggingEnabled = true;
-  Logger.root.level = Level.FINEST; // defaults to Level.INFO
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   group('A group of tests', () {
     late HttpDartCouchServer cc;
@@ -34,7 +25,7 @@ void main() {
     test('login with wrong credentials', () async {
       final c1 = HttpDartCouchServer();
       final res = await c1.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         "wrongpassword",
       );

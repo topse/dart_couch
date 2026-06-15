@@ -4,7 +4,6 @@ import 'dart:typed_data';
 
 import 'package:test/test.dart';
 import 'package:dart_couch/dart_couch.dart';
-import 'package:logging/logging.dart';
 import 'package:sqlite3/sqlite3.dart' as raw_sqlite;
 
 import 'helper/helper.dart';
@@ -13,14 +12,7 @@ import 'helper/test_document_one.dart';
 void main() {
   DartCouchDb.ensureInitialized();
 
-  Logger.root.level = Level.FINEST;
-  Logger.root.onRecord.listen((record) {
-    final ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   group('Tombstone cleanup', () {
     late LocalDartCouchServer server;

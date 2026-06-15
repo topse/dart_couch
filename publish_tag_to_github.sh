@@ -56,16 +56,17 @@ readonly SOURCE_COMMIT=$(git rev-parse "${TAG}^{commit}")
 readonly SOURCE_TREE=$(git rev-parse "${TAG}^{tree}")
 readonly SOURCE_MSG=$(git log -1 --format='%B' "${SOURCE_COMMIT}")
 
-# ── Ensure the release branch exists ────────────────────────────────
+# ── Sync the release branch with the remote's current main ──────────
+# Always base the new release on the remote's CURRENT main. A release
+# published from another machine leaves this clone's '${RELEASE_BRANCH}'
+# behind; without this, we'd parent on a stale head and the later
+# --force-with-lease push would be rejected with "stale info". Fetching
+# also refreshes the remote-tracking ref the lease is checked against.
 
-if ! git show-ref --verify --quiet "refs/heads/${RELEASE_BRANCH}"; then
-    # Local branch missing — fetch remote to see if it already has history
-    echo "Local '${RELEASE_BRANCH}' branch not found, fetching from '${REMOTE}'..."
-    git fetch "${REMOTE}" main 2>/dev/null || true
-    if git show-ref --verify --quiet "refs/remotes/${REMOTE}/main"; then
-        echo "Rebuilding '${RELEASE_BRANCH}' from ${REMOTE}/main..."
-        git update-ref "refs/heads/${RELEASE_BRANCH}" "$(git rev-parse ${REMOTE}/main)"
-    fi
+git fetch "${REMOTE}" main 2>/dev/null || true
+if git show-ref --verify --quiet "refs/remotes/${REMOTE}/main"; then
+    echo "Basing '${RELEASE_BRANCH}' on ${REMOTE}/main..."
+    git update-ref "refs/heads/${RELEASE_BRANCH}" "$(git rev-parse ${REMOTE}/main)"
 fi
 
 if git show-ref --verify --quiet "refs/heads/${RELEASE_BRANCH}"; then

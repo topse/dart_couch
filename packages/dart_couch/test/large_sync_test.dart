@@ -1,8 +1,6 @@
-import 'dart:convert';
 
 import 'package:test/test.dart';
 import 'package:dart_couch/dart_couch.dart';
-import 'package:logging/logging.dart';
 
 import 'helper/couch_test_manager.dart';
 import 'helper/helper.dart';
@@ -10,14 +8,7 @@ import 'helper/load_einkaufsliste_dump_into_db.dart';
 
 void main() {
 
-  Logger.root.level = Level.FINEST;
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   CouchTestManager cm = CouchTestManager();
 

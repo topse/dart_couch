@@ -4,7 +4,6 @@ import 'dart:typed_data';
 import 'package:crypto/crypto.dart';
 
 import 'package:test/test.dart';
-import 'package:logging/logging.dart';
 
 import 'package:dart_couch/dart_couch.dart';
 
@@ -19,14 +18,7 @@ const String testDbName = 'testdb1';
 void main() {
   DartCouchDb.ensureInitialized();
 
-  Logger.root.level = Level.FINEST; // defaults to Level.INFO
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   CouchTestManager cm = CouchTestManager();
 
@@ -1678,6 +1670,33 @@ void main() {
           db.replicationController.progress.removeListener(progressListener);
         }
 
+        // `waitForSync` returns at the *first* inSync — the initial one-shot's
+        // checkpoint. But the 50 small-doc deletions landed mid-initial-sync at
+        // sequences the continuous feed is still draining at that moment, so the
+        // deleted docs may not be tombstoned locally yet (verified in logs: the
+        // tombstones ARE fetched and applied, just after the first inSync). The
+        // library converges; we must wait for that convergence deterministically
+        // rather than asserting on the racy timing window. Poll the actual target
+        // state — every deleted small doc gone locally, every large doc present —
+        // via waitForCondition (no Future.delayed-based guessing per CLAUDE.md).
+        final converged = await waitForCondition(() async {
+          for (int i = 0; i < totalSmallDocs; i++) {
+            if (await db.localDb.get(smallDocIds[i]) != null) return false;
+          }
+          for (int i = 0; i < totalLargeDocs; i++) {
+            if (await db.localDb.get(largeDocIds[i]) == null) return false;
+          }
+          return true;
+        }, maxAttempts: 240, interval: const Duration(milliseconds: 500));
+        expect(
+          converged,
+          isTrue,
+          reason:
+              'Within the timeout, all $totalSmallDocs remote-deleted docs must '
+              'be tombstoned locally and all $totalLargeDocs large docs present. '
+              'If this times out, a deletion was genuinely lost (not just slow).',
+        );
+
         final finalProgress = db.replicationController.progress.value;
         log.info(
           'Final replication progress: $finalProgress '
@@ -2211,7 +2230,7 @@ void main() {
         '*** Deleting database ${CouchTestManager.testDbName} via another instance',
       );
       await deleteDatabaseViaAnotherInstance(
-        serverUrl: CouchTestManager.uri,
+        serverUrl: cm.uri,
         username: CouchTestManager.adminUser,
         password: CouchTestManager.adminPassword,
         dbName: CouchTestManager.testDbName,
@@ -2313,7 +2332,7 @@ void main() {
 
       log.info('Deleting database ${CouchTestManager.testDbName} on server');
       await deleteDatabaseViaAnotherInstance(
-        serverUrl: CouchTestManager.uri,
+        serverUrl: cm.uri,
         username: CouchTestManager.adminUser,
         password: CouchTestManager.adminPassword,
         dbName: CouchTestManager.testDbName,
@@ -2373,7 +2392,7 @@ void main() {
 
       log.info('Deleting database ${CouchTestManager.testDbName} on server');
       await deleteDatabaseViaAnotherInstance(
-        serverUrl: CouchTestManager.uri,
+        serverUrl: cm.uri,
         username: CouchTestManager.adminUser,
         password: CouchTestManager.adminPassword,
         dbName: CouchTestManager.testDbName,
@@ -2521,7 +2540,7 @@ void main() {
       // Perform an initial online login so credentials are stored locally
       final bootstrapServer = OfflineFirstServer();
       final bootstrapLogin = await bootstrapServer.login(
-        CouchTestManager.uri,
+        cm.uri,
         CouchTestManager.adminUser,
         CouchTestManager.adminPassword,
         cm.localPath,
@@ -2802,7 +2821,7 @@ void main() {
       // 4. Delete the testdb on server
       log.info('Deleting database $dbName on server');
       await deleteDatabaseViaAnotherInstance(
-        serverUrl: CouchTestManager.uri,
+        serverUrl: cm.uri,
         username: CouchTestManager.adminUser,
         password: CouchTestManager.adminPassword,
         dbName: dbName,

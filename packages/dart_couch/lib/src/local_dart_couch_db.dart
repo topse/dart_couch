@@ -14,6 +14,7 @@ import 'messages/bulk_docs_result.dart';
 import 'messages/bulk_get.dart';
 import 'messages/couch_db_status_codes.dart';
 import 'messages/design_document.dart';
+import 'conflict_resolution_internal.dart';
 import 'messages/index_result.dart';
 import 'package:drift/drift.dart' show Value;
 
@@ -73,7 +74,9 @@ class MyDebugMutex extends Mutex {
 /// `_deleted_conflicts`, `_local_seq`) are stripped on write and re-added on
 /// read. Attachments are stored in a dedicated table and injected back into
 /// the document map by [_recreateAttachmentMapFromDatabase].
-class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
+class LocalDartCouchDb extends DartCouchDb
+    with CouchReplicationMixin
+    implements LocalConflictSource {
   /// The internal database-row ID that identifies this logical database inside
   /// the shared [AppDatabase] (one SQLite file can host multiple databases).
   final int dbid;
@@ -212,6 +215,12 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
             // Parse the JSON string to get document data
             final Map<String, dynamic> docMap = jsonDecode(docJson);
 
+            // Capture the revision chain BEFORE stripping transport fields:
+            // replication (newEdits=false) needs it to maintain the conflict
+            // leaf set (distinguish a linear supersede from a sibling branch).
+            final Map<String, dynamic>? incomingRevisions =
+                (docMap['_revisions'] as Map<String, dynamic>?);
+
             // Remove transport-only fields before processing
             docMap.remove('_revisions');
             docMap.remove('_revs_info');
@@ -334,59 +343,42 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
               // Extract version number from revision string (format: "N-hash")
               final int version = int.parse(docRev.split('-')[0]);
 
-              // Skip if we already have this exact revision
-              if (existingDoc != null && existingDoc.document.rev == docRev) {
+              // Conflict leaf maintenance (Decision A2) — shared with the
+              // multipart paths. writeAsWinner is false when the incoming was
+              // already handled (deduped / ancestor / stored as a conflict
+              // leaf). When stored as a (non-deleted) conflict leaf, persist
+              // that leaf's inline attachments under its fkconflict (Stage 2).
+              final leaf = await _applyIncomingLeaf(
+                docId: docId,
+                docRev: docRev,
+                version: version,
+                isDeleted: isDeleted,
+                docMap: docMap,
+                incomingRevisions: incomingRevisions,
+                existingDoc: existingDoc,
+                deferredFileDeletes: deferredFileDeletes,
+              );
+              if (!leaf.writeAsWinner) {
+                if (leaf.incomingConflictRowId != null) {
+                  await _storeInlineConflictAttachments(
+                    docRowId: existingDoc!.document.id,
+                    conflictRowId: leaf.incomingConflictRowId!,
+                    attachmentsMap:
+                        docMap['_attachments'] as Map<String, dynamic>?,
+                    deferredFileDeletes: deferredFileDeletes,
+                  );
+                }
+                // The revision tree changed (a conflict leaf was added /
+                // superseded / tombstoned) while the winner row stayed the same.
+                // Bump the doc's seq so the changes feed re-emits it and the
+                // change replicates out (CouchDB-faithful — see updateDocumentSeq
+                // / _applyIncomingLeaf.leafSetChanged).
+                if (leaf.leafSetChanged) {
+                  final seq = await db.incrementAndGetUpdateSeq(dbid);
+                  await db.updateDocumentSeq(existingDoc!.document.id, seq);
+                }
                 results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
                 continue;
-              }
-
-              // CouchDB deterministic conflict resolution for newEdits=false:
-              // 1. Higher version number always wins
-              // 2. On equal version: non-deleted wins over deleted
-              // 3. On equal version + equal deletion status: higher hash wins
-              //
-              // Rule 2 matters for human-resolved conflicts: when an app
-              // resolves a conflict by deleting one of the competing revisions,
-              // both the winning (active) leaf and the losing (deleted) leaf
-              // appear in the changes feed with style=all_docs. If the deleted
-              // leaf happens to have a lexicographically higher hash than the
-              // active leaf (e.g. categorie_back_teig: active=2-0b99... vs
-              // deleted=2-d077...), a hash-only comparison would wrongly store
-              // the document as a tombstone locally.
-              //
-              // CouchDB stores both leaves in its revision tree; since we store
-              // only one, we apply the same winner selection algorithm.
-              if (existingDoc != null &&
-                  version <= existingDoc.document.version) {
-                if (version < existingDoc.document.version) {
-                  // Incoming version is strictly older — skip
-                  results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
-                  continue;
-                }
-                // Equal version — prefer non-deleted over deleted first
-                final existingDeleted = existingDoc.document.deleted ?? false;
-                if (isDeleted && !existingDeleted) {
-                  // Existing is active, incoming is deleted — existing wins
-                  results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
-                  continue;
-                }
-                if (isDeleted == existingDeleted) {
-                  // Same deletion status — compare revision hashes to pick winner
-                  final incomingHash = docRev.substring(
-                    docRev.indexOf('-') + 1,
-                  );
-                  final existingHash = existingDoc.document.rev.substring(
-                    existingDoc.document.rev.indexOf('-') + 1,
-                  );
-                  if (incomingHash.compareTo(existingHash) <= 0) {
-                    // Existing hash wins (or identical) — skip
-                    results.add(
-                      BulkDocsResult(id: docId, ok: true, rev: docRev),
-                    );
-                    continue;
-                  }
-                }
-                // Incoming wins — fall through to overwrite
               }
 
               // Collect attachment IDs before tombstone trigger fires.
@@ -546,6 +538,506 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     });
   }
 
+  // --- Conflict leaf helpers (Decision A2 in PLAN.md) ----------------------
+
+  /// Expands a CouchDB `_revisions` object (`{start, ids}`) into the list of
+  /// full rev strings ("N-hash"), newest-first. Falls back to [fallbackRev]
+  /// when the object is absent or malformed.
+  List<String> _expandRevisions(
+    Map<String, dynamic>? revisions,
+    String fallbackRev,
+  ) {
+    if (revisions == null) return [fallbackRev];
+    final start = (revisions['start'] as num?)?.toInt();
+    final ids = (revisions['ids'] as List?)?.cast<String>();
+    if (start == null || ids == null || ids.isEmpty) return [fallbackRev];
+    return [for (var i = 0; i < ids.length; i++) '${start - i}-${ids[i]}'];
+  }
+
+  /// All non-winning conflict leaf rows stored for the document row [docRowId].
+  Future<List<LocalConflictRevision>> _getConflictRevs(int docRowId) =>
+      db.getConflictRevisions(docRowId);
+
+  /// The `changes` array (leaf rev list) for one changes-feed entry.
+  ///
+  /// With [styleAllDocs] (replication's `style=all_docs`) this advertises EVERY
+  /// leaf of the document — the winner plus all stored conflict leaves, deleted
+  /// ones included — so Local can act as a faithful replication *source* for
+  /// conflicted documents: the puller's `revsDiff` then sees the conflict and
+  /// tombstone leaves and transfers the ones the target lacks (PLAN.md Phase 1
+  /// Stage 3; required by Phase 2 so a resolution tombstone reaches the remote).
+  /// Without [styleAllDocs] only the winning rev is advertised. The per-doc
+  /// query is only run when [styleAllDocs] is set (replication), so the common
+  /// app-level changes feed pays nothing.
+  Future<List<Map<String, String>>> _changesArrayForDoc(
+    LocalDocumentWithBlob ldoc,
+    bool styleAllDocs,
+  ) async {
+    if (!styleAllDocs) {
+      return [
+        {'rev': ldoc.document.rev},
+      ];
+    }
+    final conflicts = await _getConflictRevs(ldoc.document.id);
+    return [
+      {'rev': ldoc.document.rev},
+      for (final c in conflicts) {'rev': c.rev},
+    ];
+  }
+
+  /// Synchronous variant of [_changesArrayForDoc] for the normal/long-poll feed,
+  /// using a [conflictMap] (doc row id → conflict revs) fetched once for the
+  /// whole batch via [AppDatabase.conflictRevsByDoc].
+  List<Map<String, String>> _changesArrayFromMap(
+    LocalDocumentWithBlob ldoc,
+    bool styleAllDocs,
+    Map<int, List<String>> conflictMap,
+  ) {
+    final winner = {'rev': ldoc.document.rev};
+    if (!styleAllDocs) return [winner];
+    final extra = conflictMap[ldoc.document.id];
+    if (extra == null || extra.isEmpty) return [winner];
+    return [
+      winner,
+      for (final r in extra) {'rev': r},
+    ];
+  }
+
+  /// Stores a non-winning conflict leaf for [docRowId], replacing any existing
+  /// row for the same rev (idempotent). The body is stored with `_attachments`
+  /// stripped (the leaf's attachment *bytes* are stored separately in
+  /// `local_attachments` keyed by `fkconflict`, Stage 2) and `_revisions` kept
+  /// (needed for ancestry checks and `revs:true` reads). Returns the
+  /// `local_conflict_revisions` row id, used as the `fkconflict` when persisting
+  /// this leaf's attachments.
+  Future<int> _putConflictLeaf({
+    required int docRowId,
+    required String rev,
+    required int version,
+    required bool deleted,
+    required Map<String, dynamic> bodyMap,
+    Map<String, dynamic>? revisions,
+  }) async {
+    final body = Map<String, dynamic>.from(bodyMap)
+      ..remove('_attachments')
+      ..remove('_revs_info')
+      ..remove('_conflicts')
+      ..remove('_deleted_conflicts')
+      ..remove('_local_seq');
+    if (revisions != null) {
+      body['_revisions'] = revisions;
+    } else {
+      body.remove('_revisions');
+    }
+    return db.putConflictRevision(
+      docRowId: docRowId,
+      rev: rev,
+      version: version,
+      deleted: deleted,
+      body: jsonEncode(body),
+    );
+  }
+
+  /// Persists a non-winning conflict leaf's **inline (base64)** attachments,
+  /// keyed by [conflictRowId] (`fkconflict`). Stub entries (no `data`) are
+  /// skipped. Mirrors the winner inline loop but with `fkconflict` set, so the
+  /// leaf's bytes are retrievable via `get(rev:leaf, attachments:true)` /
+  /// `getAttachment(rev:leaf)` (PLAN.md Phase 1 Stage 2). Must run in a txn.
+  Future<void> _storeInlineConflictAttachments({
+    required int docRowId,
+    required int conflictRowId,
+    required Map<String, dynamic>? attachmentsMap,
+    List<int>? deferredFileDeletes,
+  }) async {
+    if (attachmentsMap == null) return;
+    int ordering = 0;
+    for (final entry in attachmentsMap.entries) {
+      final attMeta = entry.value as Map<String, dynamic>;
+      final base64Data = attMeta['data'] as String?;
+      if (base64Data == null) continue; // stub (atts_since) — nothing to store
+      ordering++;
+      await _saveAttachmentWithFileIO(
+        LocalAttachmentsCompanion(
+          fkdocument: Value(docRowId),
+          fkconflict: Value(conflictRowId),
+          name: Value(entry.key),
+          revpos: Value(attMeta['revpos'] as int? ?? 1),
+          contentType: Value(
+            attMeta['content_type'] as String? ?? 'application/octet-stream',
+          ),
+          ordering: Value(ordering),
+        ),
+        Uint8List.fromList(base64Decode(base64Data)),
+        deferredFileDeletes: deferredFileDeletes,
+      );
+    }
+  }
+
+  /// Persists a non-winning conflict leaf's **streamed** attachments (multipart
+  /// replication), keyed by [conflictRowId] (`fkconflict`). Mirrors the winner
+  /// multipart loop with `fkconflict` set; streams to disk (no base64).
+  /// Must run in a txn.
+  Future<void> _storeStreamConflictAttachments({
+    required int docRowId,
+    required int conflictRowId,
+    required Map<String, BulkGetMultipartAttachment> attachments,
+    List<int>? deferredFileDeletes,
+  }) async {
+    int ordering = 0;
+    for (final entry in attachments.entries) {
+      final att = entry.value;
+      ordering++;
+      await _saveAttachmentFromStream(
+        LocalAttachmentsCompanion(
+          fkdocument: Value(docRowId),
+          fkconflict: Value(conflictRowId),
+          name: Value(entry.key),
+          revpos: Value(att.revpos),
+          contentType: Value(att.contentType),
+          ordering: Value(ordering),
+        ),
+        att.digest,
+        att.length,
+        att.data,
+        encoding: att.encoding,
+        deferredFileDeletes: deferredFileDeletes,
+      );
+    }
+  }
+
+  /// After the winning leaf of [docRowId]/[docid] has been tombstoned, promote
+  /// the best surviving leaf to winner per CouchDB's rule (non-deleted preferred
+  /// → highest generation → highest rev hash). The demoted old winner is kept as
+  /// a (deleted) conflict leaf. No-op when there are no conflict leaves or the
+  /// current winner is still the best leaf. Must run inside a `db.transaction()`.
+  Future<void> _promoteAfterTombstone(int docRowId, String docid) async {
+    final conflicts = await db.getConflictRevisions(docRowId);
+    if (conflicts.isEmpty) return;
+    final winnerRow = await db.getDocument(
+      dbid,
+      docid,
+      true,
+      ignoreDeleted: true,
+    );
+    if (winnerRow == null) return;
+
+    final String curRev = winnerRow.document.rev;
+    final int curVer = winnerRow.document.version;
+    final bool curDel = winnerRow.document.deleted ?? false;
+
+    String hashOf(String rev) => rev.substring(rev.indexOf('-') + 1);
+
+    String bestRev = curRev;
+    int bestVer = curVer;
+    bool bestDel = curDel;
+    LocalConflictRevision? bestConflict;
+    for (final c in conflicts) {
+      final cd = c.deleted ?? false;
+      // A non-deleted but bodyless leaf (a recorded permanently-gone /
+      // `not_found` leaf) cannot be promoted — there is no body to serve as the
+      // winner. Skip it as a candidate (it stays a conflict leaf). A deleted
+      // bodyless leaf is a normal tombstone and remains promotable.
+      if (!cd && c.body == null) continue;
+      final bool better;
+      if (cd != bestDel) {
+        better = !cd; // non-deleted preferred
+      } else if (c.version != bestVer) {
+        better = c.version > bestVer;
+      } else {
+        better = hashOf(c.rev).compareTo(hashOf(bestRev)) > 0;
+      }
+      if (better) {
+        bestRev = c.rev;
+        bestVer = c.version;
+        bestDel = cd;
+        bestConflict = c;
+      }
+    }
+    if (bestConflict == null) return; // current winner is still the best leaf
+
+    // Demote the old winner to a conflict leaf (its body is gone if it was
+    // tombstoned; store a minimal deleted body in that case).
+    final Map<String, dynamic> oldBody = (!curDel && winnerRow.data != null)
+        ? (jsonDecode(winnerRow.data!) as Map<String, dynamic>)
+        : <String, dynamic>{'_id': docid, '_rev': curRev, '_deleted': true};
+    final demotedRowId = await _putConflictLeaf(
+      docRowId: docRowId,
+      rev: curRev,
+      version: curVer,
+      deleted: curDel,
+      bodyMap: oldBody,
+      revisions: (await _getRevs(docRowId, curVer))?.toMap(),
+    );
+    // If the old winner was still live (not the post-tombstone case), move its
+    // attachments onto the demoted conflict leaf. When it was tombstoned, the
+    // cleanup_attachments_on_tombstone trigger already removed them.
+    if (!curDel) {
+      await db.demoteWinnerAttachments(docRowId, demotedRowId);
+    }
+
+    // Promote the chosen leaf into the winner row. Re-point its attachments to
+    // the winner (fkconflict → NULL) BEFORE deleting its conflict row —
+    // otherwise delete_conflict_attachments_before_conflict_revision would drop
+    // the promoted leaf's attachment rows (Stage 2).
+    await db.promoteConflictAttachments(bestConflict.id);
+    await db.deleteConflictRevision(docRowId, bestConflict.rev);
+    // The promoted leaf's generation may be below the tombstoned old winner's,
+    // so the append-only revision history would keep a stale higher-version row
+    // at its (version-sorted) head — mismatching the new winner and tripping the
+    // `history[0].version == rev` invariant in [_getRevs] on the next write.
+    // Clear it; the winner-row insert below re-seeds the head via the trigger.
+    await db.clearRevisionHistory(docRowId);
+    final int seq = await db.incrementAndGetUpdateSeq(dbid);
+    await db
+        .into(db.localDocuments)
+        .insertOnConflictUpdate(
+          LocalDocumentsCompanion(
+            id: Value(docRowId),
+            docid: Value(docid),
+            fkdatabase: Value(dbid),
+            rev: Value(bestConflict.rev),
+            version: Value(bestConflict.version),
+            deleted: Value(bestConflict.deleted ?? false),
+            seq: Value(seq),
+          ),
+        );
+    if (!(bestConflict.deleted ?? false) && bestConflict.body != null) {
+      final m = jsonDecode(bestConflict.body!) as Map<String, dynamic>
+        ..remove('_revisions')
+        ..remove('_attachments');
+      await db
+          .into(db.documentBlobs)
+          .insertOnConflictUpdate(
+            DocumentBlobsCompanion(
+              documentId: Value(docRowId),
+              data: Value(jsonEncode(m)),
+            ),
+          );
+    }
+  }
+
+  /// Applies conflict-leaf maintenance (Decision A2) for one incoming
+  /// newEdits=false revision against the current stored state, using the
+  /// incoming `_revisions` ancestry to tell a linear supersede from a sibling
+  /// branch (CouchDB's revision tree).
+  ///
+  /// Outcome of [_applyIncomingLeaf].
+  ///
+  /// - [writeAsWinner]: the caller should write [docMap] as the **winner**
+  ///   (local_documents + blob + winner attachments), as before.
+  /// - [incomingConflictRowId]: when the incoming was stored as a non-winning
+  ///   **conflict leaf**, the `local_conflict_revisions` row id, so the caller
+  ///   can persist *that leaf's* attachment bytes with `fkconflict` set
+  ///   (Stage 2). Null when there is nothing for the caller to store
+  ///   (winner write, dedup, ancestor, or a leaf without attachments).
+  ///
+  /// The old-winner **demote** attachment re-point (when an incoming sibling
+  /// wins) is done here (metadata-only), so the caller never has to.
+  /// Shared by [bulkDocsRaw] and [bulkDocsFromMultipart] so all replication
+  /// write paths maintain the conflict leaf set identically. Must run inside a
+  /// `db.transaction()`.
+  Future<({bool writeAsWinner, int? incomingConflictRowId, bool leafSetChanged})>
+  _applyIncomingLeaf({
+    required String docId,
+    required String docRev,
+    required int version,
+    required bool isDeleted,
+    required Map<String, dynamic> docMap,
+    required Map<String, dynamic>? incomingRevisions,
+    required LocalDocumentWithBlob? existingDoc,
+    required List<int> deferredFileDeletes,
+  }) async {
+    // True when the revision tree changed but the winner row did NOT — i.e. a
+    // conflict leaf was added, superseded, or tombstoned. CouchDB bumps a
+    // document's update_seq for ANY tree change (so the changes feed re-emits it
+    // and replication propagates it); the caller uses this flag to do the same
+    // even when it isn't rewriting the winner row (PLAN.md Phase 2 — required
+    // for opt-in conflict resolution to reach the remote).
+    bool leafSetChanged = false;
+    if (existingDoc == null) {
+      return (
+        writeAsWinner: true,
+        incomingConflictRowId: null,
+        leafSetChanged: leafSetChanged,
+      );
+    }
+    // Already have this exact revision as the winner.
+    if (existingDoc.document.rev == docRev) {
+      return (
+        writeAsWinner: false,
+        incomingConflictRowId: null,
+        leafSetChanged: leafSetChanged,
+      );
+    }
+
+    final List<String> incomingChain = _expandRevisions(
+      incomingRevisions,
+      docRev,
+    );
+    final Set<String> incomingAncestors = incomingChain.toSet();
+
+    final int docRowId = existingDoc.document.id;
+    final String winnerRev = existingDoc.document.rev;
+    final int winnerVersion = existingDoc.document.version;
+    final bool winnerDeleted = existingDoc.document.deleted ?? false;
+    final conflicts = await _getConflictRevs(docRowId);
+
+    // (a) Already stored as a conflict leaf.
+    if (conflicts.any((c) => c.rev == docRev)) {
+      return (
+        writeAsWinner: false,
+        incomingConflictRowId: null,
+        leafSetChanged: leafSetChanged,
+      );
+    }
+
+    // (b) Incoming is an ancestor of an existing leaf → already represented.
+    // An ancestor has a lower generation than the leaf it precedes, so this can
+    // only apply when the incoming version is below the winner's, or when there
+    // are conflict leaves to check. Skipping it for the common linear
+    // update/delete (incoming newer, no conflicts) avoids the expensive winner
+    // revision-history reconstruction.
+    bool incomingIsAncestor = false;
+    if (conflicts.isNotEmpty || version < winnerVersion) {
+      final Set<String> winnerChain = _expandRevisions(
+        (await _getRevs(docRowId, winnerVersion))?.toMap(),
+        winnerRev,
+      ).toSet();
+      incomingIsAncestor = docRev != winnerRev && winnerChain.contains(docRev);
+      if (!incomingIsAncestor) {
+        for (final c in conflicts) {
+          final cChain = _expandRevisions(
+            (jsonDecode(c.body ?? '{}') as Map<String, dynamic>)['_revisions']
+                as Map<String, dynamic>?,
+            c.rev,
+          );
+          if (c.rev != docRev && cChain.contains(docRev)) {
+            incomingIsAncestor = true;
+            break;
+          }
+        }
+      }
+    }
+    if (incomingIsAncestor) {
+      return (
+        writeAsWinner: false,
+        incomingConflictRowId: null,
+        leafSetChanged: leafSetChanged,
+      );
+    }
+
+    // (c) Incoming supersedes any conflict leaf found in its chain. Collect that
+    // leaf's attachment file ids before the delete (the BEFORE-DELETE trigger
+    // drops the rows; files are the Dart layer's responsibility) so the caller
+    // removes them after the transaction commits.
+    for (final c in conflicts) {
+      if (c.rev != docRev && incomingAncestors.contains(c.rev)) {
+        deferredFileDeletes.addAll(
+          (await db.getConflictAttachments(c.id)).map((a) => a.id),
+        );
+        await db.deleteConflictRevision(docRowId, c.rev);
+        leafSetChanged = true; // a leaf was removed from the tree
+      }
+    }
+
+    // (d) Does incoming beat the current winner?
+    //
+    // Two distinct cases, and conflating them is wrong:
+    //  - **Linear descendant**: incoming descends from the current winner
+    //    (winnerRev is in incoming's ancestry). The winner stops being a leaf,
+    //    so incoming always supersedes it — even a tombstone child of a live
+    //    winner (a normal delete). Generation/deleted comparisons do NOT apply.
+    //  - **Sibling branches**: incoming does not descend from the winner. Then
+    //    CouchDB's leaf rule decides: a non-deleted leaf beats a deleted one
+    //    regardless of generation, then higher generation, then higher hash.
+    //    (This is the same ordering [_promoteAfterTombstone] uses.)
+    //
+    // We can only trust the descendant/sibling distinction when the incoming
+    // `_revisions` chain is present; without it (haveAncestry == false) we fall
+    // back to the legacy generation-first comparison so a tombstone delivered
+    // without `_revisions` still performs a normal linear delete.
+    final bool haveAncestry = incomingRevisions != null;
+    final ih = docRev.substring(docRev.indexOf('-') + 1);
+    final eh = winnerRev.substring(winnerRev.indexOf('-') + 1);
+    bool incomingWins;
+    if (haveAncestry && incomingAncestors.contains(winnerRev)) {
+      incomingWins = true; // linear supersede — winner is an ancestor
+    } else if (haveAncestry && isDeleted != winnerDeleted) {
+      incomingWins = !isDeleted; // sibling leaves: non-deleted preferred
+    } else if (version != winnerVersion) {
+      incomingWins = version > winnerVersion;
+    } else if (isDeleted != winnerDeleted) {
+      incomingWins = !isDeleted;
+    } else {
+      incomingWins = ih.compareTo(eh) > 0;
+    }
+
+    // Conflict bookkeeping (storing a losing sibling, or demoting the old
+    // winner) is only safe when we actually have the incoming `_revisions`
+    // chain (haveAncestry, above) to prove a sibling branch. Without it we fall
+    // back to the historical winner-only behaviour: a losing rev is skipped, and
+    // a winning rev simply overwrites — so e.g. a tombstone delivered without
+    // `_revisions` performs a normal linear delete instead of being
+    // misclassified as a sibling (which promotion would then undo).
+    if (!incomingWins) {
+      if (haveAncestry) {
+        // Sibling that loses → store as a conflict leaf; winner stays. The
+        // returned row id lets the caller persist this leaf's attachments
+        // (fkconflict). A tombstone leaf has no attachments to store.
+        final conflictRowId = await _putConflictLeaf(
+          docRowId: docRowId,
+          rev: docRev,
+          version: version,
+          deleted: isDeleted,
+          bodyMap: docMap,
+          revisions: incomingRevisions,
+        );
+        leafSetChanged = true; // a new (losing) leaf was added to the tree
+        return (
+          writeAsWinner: false,
+          incomingConflictRowId: isDeleted ? null : conflictRowId,
+          leafSetChanged: leafSetChanged,
+        );
+      }
+      return (
+        writeAsWinner: false,
+        incomingConflictRowId: null,
+        leafSetChanged: leafSetChanged,
+      );
+    }
+
+    // Incoming wins. If we have ancestry and the old winner is a sibling (not an
+    // ancestor of incoming) demote it to a conflict leaf to preserve it — and
+    // re-point its attachments onto that conflict leaf (metadata-only; files
+    // keep their `att/{PK}` name). The caller then writes the incoming winner's
+    // own attachments as fkconflict=NULL.
+    if (haveAncestry && !incomingAncestors.contains(winnerRev)) {
+      final Map<String, dynamic> oldBody = existingDoc.data != null
+          ? (jsonDecode(existingDoc.data!) as Map<String, dynamic>)
+          : <String, dynamic>{
+              '_id': docId,
+              '_rev': winnerRev,
+              '_deleted': true,
+            };
+      final demotedRowId = await _putConflictLeaf(
+        docRowId: docRowId,
+        rev: winnerRev,
+        version: winnerVersion,
+        deleted: winnerDeleted,
+        bodyMap: oldBody,
+        revisions: (await _getRevs(docRowId, winnerVersion))?.toMap(),
+      );
+      if (!winnerDeleted) {
+        await db.demoteWinnerAttachments(docRowId, demotedRowId);
+      }
+    }
+    return (
+      writeAsWinner: true,
+      incomingConflictRowId: null,
+      leafSetChanged: leafSetChanged,
+    );
+  }
+
   @override
   Future<DatabaseInfo?> info() async {
     if (_disposed) {
@@ -634,7 +1126,9 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     assert(attEncodingInfo == false);
     assert(lastEventId == null);
     assert(limit == 0);
-    //assert(styleAllDocs == false);  // I think the local implementation cannot have branching revisions?
+    // styleAllDocs is now supported: Local stores conflict leaves (Decision A2)
+    // and advertises them all in the feed so it can forward conflict branches
+    // as a replication source (Stage 3) — see _changesArrayForDoc.
     assert(timeout == null);
     assert(seqInterval == null);
 
@@ -732,6 +1226,12 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
           ldocs = ldocs.where(passesFilter).toList(growable: false);
         }
         assert(controller.hasListener);
+        // For style=all_docs, advertise every leaf (winner + conflict leaves)
+        // so Local can forward conflict branches as a replication source
+        // (Stage 3). Fetched once for the whole batch; empty otherwise.
+        final Map<int, List<String>> conflictMap = styleAllDocs
+            ? await db.conflictRevsByDoc(dbid)
+            : const <int, List<String>>{};
         // Build raw JSON map instead of ChangesResult
         final json = <String, dynamic>{
           'pending': 0,
@@ -740,9 +1240,7 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
             final changeEntry = <String, dynamic>{
               'seq': _makeSeqString(ldoc.document.seq),
               'id': ldoc.document.docid,
-              'changes': [
-                {'rev': ldoc.document.rev},
-              ],
+              'changes': _changesArrayFromMap(ldoc, styleAllDocs, conflictMap),
             };
             if (ldoc.document.deleted == true) {
               changeEntry['deleted'] = true;
@@ -773,8 +1271,20 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
               : sinceSeq;
           subscription = db
               .watchDocuments(dbid, loadDocs, since: effectiveSince)
+              // Compute the (possibly multi-leaf) changes array off the listener
+              // via asyncMap, which preserves emission order — needed because
+              // style=all_docs forwarding (Stage 3) requires a per-doc conflict
+              // query. For the common app feed (styleAllDocs=false) this does no
+              // DB work.
+              .asyncMap(
+                (LocalDocumentWithBlob ldoc) async => (
+                  ldoc,
+                  await _changesArrayForDoc(ldoc, styleAllDocs),
+                ),
+              )
               .listen(
-                (LocalDocumentWithBlob ldoc) {
+                ((LocalDocumentWithBlob, List<Map<String, String>>) entry) {
+                  final ldoc = entry.$1;
                   if (controller.isClosed) {
                     return;
                   }
@@ -790,9 +1300,7 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
                   final json = <String, dynamic>{
                     'seq': _makeSeqString(ldoc.document.seq),
                     'id': ldoc.document.docid,
-                    'changes': [
-                      {'rev': ldoc.document.rev},
-                    ],
+                    'changes': entry.$2,
                   };
                   if (ldoc.document.deleted == true) {
                     json['deleted'] = true;
@@ -835,6 +1343,9 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     bool revs = false,
     bool revsInfo = false,
     bool attachments = false,
+    bool conflicts = false,
+    bool deletedConflicts = false,
+    bool meta = false,
   }) async {
     if (_disposed) {
       throw CouchDbException(
@@ -850,6 +1361,9 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         revs: revs,
         revsInfo: revsInfo,
         attachments: attachments,
+        conflicts: conflicts,
+        deletedConflicts: deletedConflicts,
+        meta: meta,
       );
     });
   }
@@ -870,6 +1384,9 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     bool revs = false,
     bool revsInfo = false,
     bool attachments = false,
+    bool conflicts = false,
+    bool deletedConflicts = false,
+    bool meta = false,
     bool ignoreDeleted = false,
     int? maxAttsSinceVersion,
   }) async {
@@ -892,7 +1409,55 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
       rev: rev,
       ignoreDeleted: ignoreDeleted,
     );
-    if (ldoc == null) return null;
+    if (ldoc == null) {
+      // The winner doesn't match. If a specific rev was requested, it may be a
+      // stored non-winning conflict leaf (Decision A2) — serve its body.
+      if (rev != null) {
+        final winnerRow = await db.getDocument(
+          dbid,
+          docid,
+          false,
+          ignoreDeleted: true,
+        );
+        if (winnerRow != null) {
+          final leaf = (await db.getConflictRevisions(
+            winnerRow.document.id,
+          )).firstWhereOrNull((c) => c.rev == rev);
+          if (leaf != null) {
+            if (leaf.body == null) {
+              // A deleted tombstone leaf serves a minimal deleted doc; a
+              // non-deleted bodyless leaf (a recorded permanently-gone leaf) has
+              // no retrievable body → not_found, exactly like the source.
+              if (leaf.deleted ?? false) {
+                return {'_id': docid, '_rev': rev, '_deleted': true};
+              }
+              return null;
+            }
+            final m = jsonDecode(leaf.body!) as Map<String, dynamic>;
+            // Conflict bodies are stored with `_revisions` kept; strip it when
+            // the caller didn't ask for it.
+            if (revs != true) m.remove('_revisions');
+            // Stage 2: reconstruct this leaf's own attachments (inline base64
+            // when attachments:true, else stubs) from its fkconflict rows, so
+            // get(rev:leaf) matches Http.
+            final attMap = await _recreateAttachmentMapFromDatabase(
+              winnerRow.document.id,
+              attachments,
+              conflictRowId: leaf.id,
+            );
+            if (attMap != null) {
+              m['_attachments'] = attMap.map((key, value) {
+                final stub = value.toMap();
+                if (value.encoding != null) stub['encoding'] = value.encoding;
+                return MapEntry(key, stub);
+              });
+            }
+            return m;
+          }
+        }
+      }
+      return null;
+    }
 
     // Tombstoned documents have no blob - reconstruct minimal doc from metadata
     Map<String, dynamic> docMap;
@@ -907,6 +1472,11 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
       docMap = jsonDecode(ldoc.data!);
     }
 
+    // `meta` is shorthand for conflicts + deleted_conflicts + revs_info.
+    final wantRevsInfo = revsInfo || meta;
+    final wantConflicts = conflicts || meta;
+    final wantDeletedConflicts = deletedConflicts || meta;
+
     // Add revisions and revsInfo if requested
     if (revs == true) {
       final revisions = await _getRevs(ldoc.document.id, ldoc.document.version);
@@ -914,9 +1484,28 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         docMap['_revisions'] = revisions.toMap();
       }
     }
-    if (revsInfo == true) {
+    if (wantRevsInfo) {
       final revsInfoList = await _getRevsInfo(ldoc.document.id);
       docMap['_revs_info'] = revsInfoList.map((e) => e.toMap()).toList();
+    }
+    // Populate `_conflicts` / `_deleted_conflicts` from the stored non-winning
+    // conflict leaves (Decision A2) so Local matches Http (Phase 0 test P2).
+    if (wantConflicts || wantDeletedConflicts) {
+      final conflictLeaves = await db.getConflictRevisions(ldoc.document.id);
+      if (wantConflicts) {
+        final live = conflictLeaves
+            .where((c) => !(c.deleted ?? false))
+            .map((c) => c.rev)
+            .toList();
+        if (live.isNotEmpty) docMap['_conflicts'] = live;
+      }
+      if (wantDeletedConflicts) {
+        final del = conflictLeaves
+            .where((c) => c.deleted ?? false)
+            .map((c) => c.rev)
+            .toList();
+        if (del.isNotEmpty) docMap['_deleted_conflicts'] = del;
+      }
     }
 
     if (ldoc.data != null) {
@@ -1076,8 +1665,13 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     // stubs rather than inline data (atts_since optimisation: the caller
     // already holds a revision that contains those attachments).
     int? maxAttsSinceVersion,
+    // When non-null, build the attachment map for the **conflict leaf** with
+    // this `local_conflict_revisions` row id instead of the winner's (Stage 2).
+    int? conflictRowId,
   }) async {
-    List<LocalAttachment> attachments = await db.getAttachments(dbdocid);
+    List<LocalAttachment> attachments = conflictRowId != null
+        ? await db.getConflictAttachments(conflictRowId)
+        : await db.getAttachments(dbdocid);
 
     Map<String, AttachmentInfo> map = {};
     for (int i = 0; i < attachments.length; ++i) {
@@ -1154,10 +1748,31 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
           doc = await _addRevs(ldoc.document.id, doc);
         }
 
+        final Set<String> addedRevs = {};
         if (revisions == null || revisions.contains(doc.rev)) {
           res.add(
             OpenRevsResult(missingRev: null, state: OpenRevsState.ok, doc: doc),
           );
+          if (doc.rev != null) addedRevs.add(doc.rev!);
+        }
+
+        // Add non-winning conflict leaves (Decision A2) so open_revs returns the
+        // full leaf set, matching CouchDB. Each leaf carries its own body (and
+        // `_revisions` when revs:true).
+        for (final c in await db.getConflictRevisions(ldoc.document.id)) {
+          if (revisions != null && !revisions.contains(c.rev)) continue;
+          CouchDocumentBase cdoc;
+          if (c.body == null) {
+            cdoc = CouchDocumentBase(id: docid, rev: c.rev, deleted: true);
+          } else {
+            final m = jsonDecode(c.body!) as Map<String, dynamic>;
+            if (revs != true) m.remove('_revisions');
+            cdoc = CouchDocumentBase.fromMap(m);
+          }
+          res.add(
+            OpenRevsResult(missingRev: null, state: OpenRevsState.ok, doc: cdoc),
+          );
+          addedRevs.add(c.rev);
         }
 
         if (revisions != null) {
@@ -1168,7 +1783,7 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
           ))!;
 
           for (int i = 0; i < history.length; ++i) {
-            if (history[i].rev != doc.rev &&
+            if (!addedRevs.contains(history[i].rev) &&
                 revisions.contains(history[i].rev)) {
               res.add(
                 OpenRevsResult(
@@ -1763,6 +2378,10 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
       // No blob write needed: the cleanup_document_blob_on_tombstone trigger
       // deletes the blob when deleted changes to true. CouchDB does not keep
       // document bodies for tombstoned documents.
+
+      // If the deleted winner had conflict leaves, promote the best surviving
+      // leaf (CouchDB rule), so deleting a conflicted doc converges like CouchDB.
+      await _promoteAfterTombstone(existingDoc.document.id, docid);
     });
 
     for (final id in tombstoneAttachmentIds) {
@@ -2026,23 +2645,38 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
     }
 
     return await m.protect(() async {
-      LocalDocumentWithBlob? ldoc = await db.getDocument(
+      // Fetch the winner row (even if tombstoned) to get the document row id;
+      // conflict leaves hang off it.
+      final winnerRow = await db.getDocument(
         dbid,
         docId,
         false,
-        rev: rev,
+        ignoreDeleted: true,
       );
-      if (ldoc == null) return null;
-      if (rev != null && ldoc.document.rev != rev) {
-        throw CouchDbException.attachmentNotFound();
-      }
-      LocalAttachment? existingAttachment = await db.getAttachment(
-        ldoc.document.id,
-        attachmentName,
-      );
-      if (existingAttachment == null) return null;
+      if (winnerRow == null) return null;
 
-      return await attachmentStorage.readAttachment(existingAttachment.id);
+      // No rev, or the winner's rev → the winner's attachment.
+      if (rev == null || rev == winnerRow.document.rev) {
+        final att = await db.getAttachment(winnerRow.document.id, attachmentName);
+        return att == null
+            ? null
+            : await attachmentStorage.readAttachment(att.id);
+      }
+
+      // A specific non-winner rev → a stored conflict leaf's own attachment
+      // (Decision A2 / Stage 2). Read via the leaf's fkconflict rows.
+      final leaf = (await db.getConflictRevisions(
+        winnerRow.document.id,
+      )).firstWhereOrNull((c) => c.rev == rev);
+      if (leaf != null) {
+        final att = await db.getConflictAttachment(leaf.id, attachmentName);
+        return att == null
+            ? null
+            : await attachmentStorage.readAttachment(att.id);
+      }
+
+      // Unknown rev for this document → null, matching Http (CouchDB 404).
+      return null;
     });
   }
 
@@ -2189,6 +2823,79 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
   ///
   /// For each document, also returns `possible_ancestors` — the locally known
   /// revision with the highest generation that is still lower than the missing
+  /// Ids of documents currently in conflict (≥1 live losing leaf) — an indexed,
+  /// ids-only lookup against the conflict side-table (no body loads, no full
+  /// scan). Package-internal ([LocalConflictSource]); used by opt-in resolution
+  /// to do a "complete run" when replication is caught up, without downloading
+  /// or scanning the whole database (PLAN.md Phase 2).
+  @override
+  Future<List<String>> conflictedDocIds() async {
+    if (_disposed) {
+      throw CouchDbException(
+        CouchDbStatusCodes.internalServerError,
+        'Database $dbname has been disposed',
+      );
+    }
+    return db.conflictedDocIds(dbid);
+  }
+
+  /// Records [rev] as a known but **bodyless** (body == null), non-deleted
+  /// conflict leaf of [docId] — see [DartCouchDb.recordBodylessLeaf].
+  ///
+  /// After this, [revsDiff] reports [rev] as known (it unions the conflict
+  /// side-table), so the puller stops re-requesting a permanently-gone leaf on
+  /// every change, and `get(conflicts: true)` lists it (Http parity). The leaf
+  /// carries no body, so it is never promoted to winner ([_promoteAfterTombstone]
+  /// skips it) and `get(rev:)` / `bulkGetMultipart` serve it as `not_found`
+  /// (mirroring the source). Idempotent: an already-known rev (the winner, a
+  /// known ancestor in the linear history, or an existing conflict leaf) or an
+  /// absent document is ignored. No `update_seq` bump — opt-in resolution finds
+  /// the doc via [conflictedDocIds], and bumping would re-emit the doc need-
+  /// lessly.
+  @override
+  Future<void> recordBodylessLeaf(String docId, String rev) async {
+    if (_disposed) {
+      throw CouchDbException(
+        CouchDbStatusCodes.internalServerError,
+        'Database $dbname has been disposed',
+      );
+    }
+    final int version = int.tryParse(rev.split('-').first) ?? 0;
+    if (version == 0) return; // malformed rev — ignore
+    await m.protect(() async {
+      await db.transaction(() async {
+        final winnerRow = await db.getDocument(
+          dbid,
+          docId,
+          false,
+          ignoreDeleted: true,
+        );
+        if (winnerRow == null) return; // doc unknown locally — nothing to anchor
+        if (winnerRow.document.rev == rev) return; // it's the winner
+        // An ancestor of the winner (anywhere in its `_revisions` chain) is
+        // already represented in the tree, not a new leaf — don't record it
+        // (mirrors the ancestry check in [_applyIncomingLeaf]). In practice the
+        // puller only calls this for source-advertised LEAVES that revsDiff
+        // reported missing, so this is a defensive guard.
+        final winnerChain = _expandRevisions(
+          (await _getRevs(winnerRow.document.id, winnerRow.document.version))
+              ?.toMap(),
+          winnerRow.document.rev,
+        ).toSet();
+        if (winnerChain.contains(rev)) return;
+        final existing = await db.getConflictRevisions(winnerRow.document.id);
+        if (existing.any((c) => c.rev == rev)) return; // already a known leaf
+        await db.putConflictRevision(
+          docRowId: winnerRow.document.id,
+          rev: rev,
+          version: version,
+          deleted: false,
+          body: null,
+        );
+      });
+    });
+  }
+
   /// revision's generation.  The replication source uses these ancestors to
   /// populate `atts_since` when fetching the document, enabling stub
   /// (metadata-only) transfer for attachments that the target already holds.
@@ -2224,6 +2931,14 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         }
 
         final Set<String> knownRevs = history.map((h) => h.rev).toSet();
+        // Also treat stored non-winning conflict leaves (Decision A2) as known,
+        // so revsDiff is deterministic regardless of the order in which leaves
+        // arrived — otherwise a conflict leaf would be re-requested every cycle
+        // (the re-pull churn). Keeps Phase 0 test P3 green for real.
+        final int docRowId = history.first.fkdocument;
+        for (final c in await db.getConflictRevisions(docRowId)) {
+          knownRevs.add(c.rev);
+        }
         final List<String> missing = [];
         for (final r in requestedRevs) {
           if (!knownRevs.contains(r)) missing.add(r);
@@ -2614,6 +3329,76 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
   // Multipart streaming API
   // ---------------------------------------------------------------------------
 
+  /// Builds a [BulkGetMultipartResult] for a stored non-winning conflict leaf
+  /// (Stage 3 forwarding — lets Local push conflict branches as a source).
+  ///
+  /// The leaf body is kept with its `_revisions` chain, served when [revs] is
+  /// set so the target can graft the branch onto its tree (a bodyless leaf is
+  /// served as a minimal tombstone). The leaf's own attachments (keyed by
+  /// `fkconflict`) are advertised as stubs in the doc and streamed alongside,
+  /// honouring `atts_since` ([maxAttsSinceVersion]) exactly like the winner path.
+  Future<BulkGetMultipartResult> _conflictLeafMultipart({
+    required String docId,
+    required int winnerDocRowId,
+    required LocalConflictRevision leaf,
+    required bool revs,
+    required int? maxAttsSinceVersion,
+  }) async {
+    // A non-deleted bodyless leaf (a recorded permanently-gone leaf) has no
+    // body to forward; serve it as not_found, exactly like the source CouchDB
+    // does — so a third sync partner records it as bodyless too rather than
+    // receiving a spurious tombstone. A deleted bodyless leaf is a real
+    // tombstone and is forwarded as a minimal deleted doc.
+    if (leaf.body == null && !(leaf.deleted ?? false)) {
+      return BulkGetMultipartFailure(
+        id: docId,
+        rev: leaf.rev,
+        error: 'not_found',
+        reason: 'missing',
+      );
+    }
+    final Map<String, dynamic> docMap;
+    if (leaf.body == null) {
+      docMap = {'_id': docId, '_rev': leaf.rev, '_deleted': true};
+    } else {
+      docMap = jsonDecode(leaf.body!) as Map<String, dynamic>;
+      docMap['_id'] = docId;
+      docMap['_rev'] = leaf.rev;
+      // Conflict bodies are stored with `_revisions` kept; strip when not asked.
+      if (!revs) docMap.remove('_revisions');
+    }
+
+    // Stub-only _attachments in the doc map (mirrors the winner path), then the
+    // actual attachment streams for those exceeding atts_since.
+    final stubsMap = await _recreateAttachmentMapFromDatabase(
+      winnerDocRowId,
+      false, // stubs only
+      conflictRowId: leaf.id,
+    );
+    if (stubsMap != null && stubsMap.isNotEmpty) {
+      docMap['_attachments'] = stubsMap.map((k, v) => MapEntry(k, v.toMap()));
+    }
+
+    final attachments = <String, BulkGetMultipartAttachment>{};
+    for (final att in await db.getConflictAttachments(leaf.id)) {
+      final shouldTransfer =
+          maxAttsSinceVersion == null || att.revpos > maxAttsSinceVersion;
+      if (!shouldTransfer) continue;
+      attachments[att.name] = BulkGetMultipartAttachment(
+        contentType: att.contentType,
+        digest: att.digest,
+        length: att.length,
+        revpos: att.revpos,
+        data: attachmentStorage.readAttachmentAsStream(att.id),
+        encoding: att.encoding,
+      );
+    }
+
+    return BulkGetMultipartSuccess(
+      BulkGetMultipartOk(doc: docMap, attachments: attachments),
+    );
+  }
+
   @override
   Stream<BulkGetMultipartResult> bulkGetMultipart(
     BulkGetRequest request, {
@@ -2645,6 +3430,32 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         );
 
         if (ldoc == null) {
+          // The winner doesn't match. If a specific rev was requested it may be
+          // a stored non-winning conflict leaf (Decision A2) — serve it so Local
+          // can forward conflict branches as a replication source (Stage 3;
+          // required for Phase 2 resolution tombstones to reach the remote).
+          if (docRequest.rev != null) {
+            final winnerRow = await db.getDocument(
+              dbid,
+              docId,
+              false,
+              ignoreDeleted: true,
+            );
+            if (winnerRow != null) {
+              final leaf = (await db.getConflictRevisions(
+                winnerRow.document.id,
+              )).firstWhereOrNull((c) => c.rev == docRequest.rev);
+              if (leaf != null) {
+                return _conflictLeafMultipart(
+                  docId: docId,
+                  winnerDocRowId: winnerRow.document.id,
+                  leaf: leaf,
+                  revs: revs,
+                  maxAttsSinceVersion: maxAttsSinceVersion,
+                );
+              }
+            }
+          }
           return BulkGetMultipartFailure(
             id: docId,
             rev: docRequest.rev,
@@ -2747,6 +3558,11 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
           try {
             final docMap = Map<String, dynamic>.from(success.ok.doc);
 
+            // Capture the revision chain before stripping (for conflict leaf
+            // maintenance), mirroring bulkDocsRaw.
+            final Map<String, dynamic>? incomingRevisions =
+                (docMap['_revisions'] as Map<String, dynamic>?);
+
             // Remove transport-only fields (mirrors bulkDocsRaw).
             docMap.remove('_revisions');
             docMap.remove('_revs_info');
@@ -2847,36 +3663,37 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
               );
               final int version = int.parse(docRev.split('-')[0]);
 
-              if (existingDoc != null && existingDoc.document.rev == docRev) {
+              // Conflict leaf maintenance (Decision A2) — shared with bulkDocsRaw.
+              // When the incoming is stored as a (non-deleted) conflict leaf,
+              // stream that leaf's attachments to disk under its fkconflict
+              // (Stage 2).
+              final leaf = await _applyIncomingLeaf(
+                docId: docId,
+                docRev: docRev,
+                version: version,
+                isDeleted: isDeleted,
+                docMap: docMap,
+                incomingRevisions: incomingRevisions,
+                existingDoc: existingDoc,
+                deferredFileDeletes: deferredFileDeletes,
+              );
+              if (!leaf.writeAsWinner) {
+                if (leaf.incomingConflictRowId != null) {
+                  await _storeStreamConflictAttachments(
+                    docRowId: existingDoc!.document.id,
+                    conflictRowId: leaf.incomingConflictRowId!,
+                    attachments: success.ok.attachments,
+                    deferredFileDeletes: deferredFileDeletes,
+                  );
+                }
+                // Tree changed but winner row unchanged → bump seq so the change
+                // replicates out (see the bulkDocsRaw path above).
+                if (leaf.leafSetChanged) {
+                  final seq = await db.incrementAndGetUpdateSeq(dbid);
+                  await db.updateDocumentSeq(existingDoc!.document.id, seq);
+                }
                 results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
                 continue;
-              }
-
-              if (existingDoc != null &&
-                  version <= existingDoc.document.version) {
-                if (version < existingDoc.document.version) {
-                  results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
-                  continue;
-                }
-                final existingDeleted = existingDoc.document.deleted ?? false;
-                if (isDeleted && !existingDeleted) {
-                  results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
-                  continue;
-                }
-                if (isDeleted == existingDeleted) {
-                  final incomingHash = docRev.substring(
-                    docRev.indexOf('-') + 1,
-                  );
-                  final existingHash = existingDoc.document.rev.substring(
-                    existingDoc.document.rev.indexOf('-') + 1,
-                  );
-                  if (incomingHash.compareTo(existingHash) <= 0) {
-                    results.add(
-                      BulkDocsResult(id: docId, ok: true, rev: docRev),
-                    );
-                    continue;
-                  }
-                }
               }
 
               final tombstoneAttachmentIds = (isDeleted && existingDoc != null)
@@ -3035,17 +3852,20 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
   ) async {
     final sw = Stopwatch()..start();
 
-    // --- Phase 1: Parse all incoming docs (outside transaction) ---
+    // --- Phase 1: Parse all incoming docs (capture _revisions for conflict
+    // leaf maintenance) ---
     final parsed = <({
       String docId,
       String docRev,
       int version,
       bool isDeleted,
       Map<String, dynamic> docMap,
+      Map<String, dynamic>? revisions,
     })>[];
 
     for (final success in docs) {
       final docMap = Map<String, dynamic>.from(success.ok.doc);
+      final revisions = docMap['_revisions'] as Map<String, dynamic>?;
       docMap.remove('_revisions');
       docMap.remove('_revs_info');
       docMap.remove('_conflicts');
@@ -3068,228 +3888,177 @@ class LocalDartCouchDb extends DartCouchDb with CouchReplicationMixin {
         version: int.parse(docRev.split('-')[0]),
         isDeleted: (docMap['_deleted'] as bool?) ?? false,
         docMap: docMap,
+        revisions: revisions,
       ));
     }
 
     final results = <BulkDocsResult>[];
+    final deferredFileDeletes = <int>[];
 
-    // --- Phase 1a: De-duplicate by docId (conflicting revisions) ---
-    // When a doc has conflicts, revsDiff returns multiple missing revisions
-    // for the same docId. We keep only the winning revision per docId using
-    // CouchDB's standard conflict resolution (highest version, then
-    // non-deleted beats deleted at same version, then highest rev hash).
-    final byDocId = <String, List<int>>{};
-    for (var i = 0; i < parsed.length; i++) {
-      byDocId.putIfAbsent(parsed[i].docId, () => []).add(i);
-    }
-
-    final deduped = <({
-      String docId,
-      String docRev,
-      int version,
-      bool isDeleted,
-      Map<String, dynamic> docMap,
-    })>[];
-
-    for (final entry in byDocId.entries) {
-      final indices = entry.value;
-      if (indices.length == 1) {
-        deduped.add(parsed[indices[0]]);
-        continue;
-      }
-      // Multiple revisions — find the winner.
-      var winnerIdx = indices[0];
-      for (var j = 1; j < indices.length; j++) {
-        final candidate = parsed[indices[j]];
-        final current = parsed[winnerIdx];
-        if (candidate.version > current.version) {
-          winnerIdx = indices[j];
-        } else if (candidate.version == current.version) {
-          final candidateDeleted = candidate.isDeleted;
-          final currentDeleted = current.isDeleted;
-          if (!candidateDeleted && currentDeleted) {
-            winnerIdx = indices[j];
-          } else if (candidateDeleted == currentDeleted) {
-            final candidateHash =
-                candidate.docRev.substring(candidate.docRev.indexOf('-') + 1);
-            final currentHash =
-                current.docRev.substring(current.docRev.indexOf('-') + 1);
-            if (candidateHash.compareTo(currentHash) > 0) {
-              winnerIdx = indices[j];
-            }
-          }
-        }
-      }
-      deduped.add(parsed[winnerIdx]);
-      // Losers get ok:true (accepted but not stored as winner).
-      for (final idx in indices) {
-        if (idx != winnerIdx) {
-          final p = parsed[idx];
-          results.add(BulkDocsResult(id: p.docId, ok: true, rev: p.docRev));
-        }
-      }
-    }
-
-    // --- All DB work inside a single transaction ---
     await db.transaction(() async {
-      // --- Phase 1b: Batch-fetch all existing docs (1 query) ---
-      final docIds = deduped.map((p) => p.docId).toList();
+      // Batch-fetch existing winners and count docId occurrences, to partition
+      // docs into a fast batch path (truly new + unique → cannot be a conflict)
+      // and a per-doc conflict-aware path (existing winner, or duplicated in
+      // this same batch — e.g. revsDiff returned several missing revs of one
+      // conflicted doc).
+      final docIds = parsed.map((p) => p.docId).toList();
       final existingDocs = await db.getDocumentsByDocIds(dbid, docIds);
+      final counts = <String, int>{};
+      for (final p in parsed) {
+        counts[p.docId] = (counts[p.docId] ?? 0) + 1;
+      }
 
-      // --- Phase 2: Evaluate skip logic, determine which docs to write ---
-      final toWrite = <({
-        String docId,
-        String docRev,
-        int version,
-        bool isDeleted,
-        Map<String, dynamic> docMap,
-        LocalDocumentWithBlob? existing,
-      })>[];
+      final simple = <int>[];
+      final complex = <int>[];
+      for (var i = 0; i < parsed.length; i++) {
+        final p = parsed[i];
+        if (existingDocs[p.docId] == null && counts[p.docId] == 1) {
+          simple.add(i);
+        } else {
+          complex.add(i);
+        }
+      }
 
-      // Collect tombstone attachment IDs for file deletion after transaction.
-      final tombstoneAttachmentIds = <int>[];
-
-      for (final p in deduped) {
-        final existing = existingDocs[p.docId];
-
-        // Same rev → already replicated, skip.
-        if (existing != null && existing.document.rev == p.docRev) {
+      // --- Fast batch path: new, unique documents (pure inserts) ---
+      // This is the common case for initial sync and keeps it batched/fast.
+      if (simple.isNotEmpty) {
+        final firstSeq = await db.incrementUpdateSeqBy(dbid, simple.length);
+        for (var k = 0; k < simple.length; k++) {
+          final p = parsed[simple[k]];
+          final seq = firstSeq + k;
+          final filteredDoc = Map<String, dynamic>.from(p.docMap)
+            ..remove('_attachments');
+          final int documentId = await db
+              .into(db.localDocuments)
+              .insertOnConflictUpdate(
+                LocalDocumentsCompanion(
+                  docid: Value(p.docId),
+                  fkdatabase: Value(dbid),
+                  rev: Value(p.docRev),
+                  version: Value(p.version),
+                  deleted: Value(p.isDeleted),
+                  seq: Value(seq),
+                ),
+              );
+          if (!p.isDeleted) {
+            await db
+                .into(db.documentBlobs)
+                .insertOnConflictUpdate(
+                  DocumentBlobsCompanion(
+                    documentId: Value(documentId),
+                    data: Value(jsonEncode(filteredDoc)),
+                  ),
+                );
+          }
           results.add(BulkDocsResult(id: p.docId, ok: true, rev: p.docRev));
-          continue;
         }
+      }
 
-        // Lower or equal version with conflict resolution.
-        if (existing != null && p.version <= existing.document.version) {
-          if (p.version < existing.document.version) {
-            results.add(BulkDocsResult(id: p.docId, ok: true, rev: p.docRev));
-            continue;
-          }
-          final existingDeleted = existing.document.deleted ?? false;
-          if (p.isDeleted && !existingDeleted) {
-            results.add(BulkDocsResult(id: p.docId, ok: true, rev: p.docRev));
-            continue;
-          }
-          if (p.isDeleted == existingDeleted) {
-            final incomingHash =
-                p.docRev.substring(p.docRev.indexOf('-') + 1);
-            final existingHash = existing.document.rev
-                .substring(existing.document.rev.indexOf('-') + 1);
-            if (incomingHash.compareTo(existingHash) <= 0) {
-              results
-                  .add(BulkDocsResult(id: p.docId, ok: true, rev: p.docRev));
-              continue;
-            }
-          }
-        }
+      // --- Per-doc conflict-aware path: existing or duplicated docs ---
+      for (final idx in complex) {
+        final p = parsed[idx];
+        // Re-fetch fresh: an earlier doc in this batch may have changed state
+        // (e.g. two conflicting revs of the same new doc in one batch).
+        final existingDoc = await db.getDocument(
+          dbid,
+          p.docId,
+          true,
+          ignoreDeleted: true,
+        );
 
-        toWrite.add((
+        // Tombstone attachment files to delete after the write (the trigger
+        // removes the rows; files are the Dart layer's responsibility).
+        final List<int> tombstoneIds = (p.isDeleted && existingDoc != null)
+            ? (await db.getAttachments(
+                existingDoc.document.id,
+              )).map((a) => a.id).toList()
+            : <int>[];
+
+        // These docs carry no attachments (partitioned into the no-attachment
+        // fast path), so a conflict leaf here has nothing to store; the old
+        // winner's attachment re-point on demote is handled inside the helper.
+        final leaf = await _applyIncomingLeaf(
           docId: p.docId,
           docRev: p.docRev,
           version: p.version,
           isDeleted: p.isDeleted,
           docMap: p.docMap,
-          existing: existing,
-        ));
-      }
-
-      if (toWrite.isEmpty) {
-        _log.fine(
-          'Batch write (fast path): ${docs.length} docs, '
-          '0 written in ${sw.elapsedMilliseconds}ms',
+          incomingRevisions: p.revisions,
+          existingDoc: existingDoc,
+          deferredFileDeletes: deferredFileDeletes,
         );
-        return;
-      }
-
-      // --- Phase 2b: Batch-fetch attachment IDs for docs that need cleanup ---
-      // This covers two cases:
-      // 1. Tombstoned docs: all attachments must be deleted.
-      // 2. Non-deleted docs with existing attachments: attachments removed
-      //    from the new revision's _attachments stubs must be deleted.
-      //    This happens when an attachment is deleted on the remote and the
-      //    new revision arrives with stubs only (no transferred data).
-      final docsNeedingAttLookup = toWrite
-          .where((w) => w.existing != null)
-          .map((w) => w.existing!.document.id)
-          .toList();
-      final existingAttMap = docsNeedingAttLookup.isNotEmpty
-          ? await db.getAttachmentsByDocumentIds(docsNeedingAttLookup)
-          : <int, List<LocalAttachment>>{};
-      for (final w in toWrite) {
-        if (w.isDeleted && w.existing != null) {
-          final atts = existingAttMap[w.existing!.document.id] ?? [];
-          tombstoneAttachmentIds.addAll(atts.map((a) => a.id));
+        if (!leaf.writeAsWinner) {
+          // Tree changed but winner row unchanged → bump seq so the change
+          // replicates out (see the bulkDocsRaw path above).
+          if (leaf.leafSetChanged) {
+            final seq = await db.incrementAndGetUpdateSeq(dbid);
+            await db.updateDocumentSeq(existingDoc!.document.id, seq);
+          }
+          results.add(BulkDocsResult(id: p.docId, ok: true, rev: p.docRev));
+          continue;
         }
-      }
-      // Collect orphaned attachment IDs for non-deleted docs whose new
-      // revision has fewer attachments than the existing local version.
-      final orphanAttachmentIds = <int>[];
-      for (final w in toWrite) {
-        if (!w.isDeleted && w.existing != null) {
-          final existingAtts = existingAttMap[w.existing!.document.id] ?? [];
-          if (existingAtts.isEmpty) continue;
-          final newAttNames =
-              (w.docMap['_attachments'] as Map<String, dynamic>?)?.keys.toSet()
-              ?? <String>{};
-          for (final att in existingAtts) {
-            if (!newAttNames.contains(att.name)) {
-              orphanAttachmentIds.add(att.id);
-            }
+
+        // Orphaned attachments: existing atts absent from the new revision.
+        final List<int> orphanIds = [];
+        if (!p.isDeleted && existingDoc != null) {
+          final existingAtts = await db.getAttachments(existingDoc.document.id);
+          final newNames =
+              (p.docMap['_attachments'] as Map<String, dynamic>?)?.keys
+                  .toSet() ??
+              <String>{};
+          for (final a in existingAtts) {
+            if (!newNames.contains(a.name)) orphanIds.add(a.id);
           }
         }
-      }
 
-      // --- Phase 3: Batch-allocate seq numbers (2 queries) ---
-      final firstSeq = await db.incrementUpdateSeqBy(dbid, toWrite.length);
-
-      // --- Phase 3b: Write documents ---
-      for (var i = 0; i < toWrite.length; i++) {
-        final w = toWrite[i];
-        final seq = firstSeq + i;
-        final filteredDoc = Map<String, dynamic>.from(w.docMap)
+        final seq = await db.incrementAndGetUpdateSeq(dbid);
+        final filteredDoc = Map<String, dynamic>.from(p.docMap)
           ..remove('_attachments');
-
         final int documentId = await db
             .into(db.localDocuments)
             .insertOnConflictUpdate(
               LocalDocumentsCompanion(
-                id: Value.absentIfNull(w.existing?.document.id),
-                docid: Value(w.docId),
+                id: Value.absentIfNull(existingDoc?.document.id),
+                docid: Value(p.docId),
                 fkdatabase: Value(dbid),
-                rev: Value(w.docRev),
-                version: Value(w.version),
-                deleted: Value(w.isDeleted),
+                rev: Value(p.docRev),
+                version: Value(p.version),
+                deleted: Value(p.isDeleted),
                 seq: Value(seq),
               ),
             );
-
-        if (!w.isDeleted) {
+        if (!p.isDeleted) {
           await db
               .into(db.documentBlobs)
               .insertOnConflictUpdate(
                 DocumentBlobsCompanion(
-                  documentId: Value(w.existing?.document.id ?? documentId),
+                  documentId: Value(existingDoc?.document.id ?? documentId),
                   data: Value(jsonEncode(filteredDoc)),
                 ),
               );
         }
+        for (final id in orphanIds) {
+          await db.deleteAttachment(id);
+        }
+        deferredFileDeletes
+          ..addAll(tombstoneIds)
+          ..addAll(orphanIds);
 
-        results.add(BulkDocsResult(id: w.docId, ok: true, rev: w.docRev));
-      }
+        // If this write tombstoned the winner, promote a surviving leaf.
+        if (p.isDeleted) {
+          await _promoteAfterTombstone(
+            existingDoc?.document.id ?? documentId,
+            p.docId,
+          );
+        }
 
-      // Delete orphaned attachment rows (non-deleted docs with removed atts).
-      for (final id in orphanAttachmentIds) {
-        await db.deleteAttachment(id);
-      }
-
-      // Delete tombstoned attachment files after transaction writes.
-      for (final id in tombstoneAttachmentIds) {
-        await _deleteAttachmentFile(id);
-      }
-      // Delete orphaned attachment files after transaction writes.
-      for (final id in orphanAttachmentIds) {
-        await _deleteAttachmentFile(id);
+        results.add(BulkDocsResult(id: p.docId, ok: true, rev: p.docRev));
       }
     });
+
+    for (final id in deferredFileDeletes) {
+      await _deleteAttachmentFile(id);
+    }
 
     sw.stop();
     _log.fine(

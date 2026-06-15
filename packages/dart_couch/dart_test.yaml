@@ -1,3 +1,10 @@
 # On some machines the tests run longer than expected
 timeout: 6x
-concurrency: 1
+
+# Suites can run in parallel: each suite starts its own CouchDB container on a
+# Docker-assigned host port (see test/helper/helper.dart) and uses a unique
+# temp SQLite directory, so there is no cross-suite collision. Each concurrent
+# suite spins up its own CouchDB container, so keep this modest relative to
+# available RAM/CPU. Override per run with `dart test -jN`.
+# RAM estimation: (N * 3 + 6) GB
+concurrency: 2

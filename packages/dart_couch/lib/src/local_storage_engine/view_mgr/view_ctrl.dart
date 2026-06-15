@@ -434,6 +434,19 @@ class ViewCtrl {
 
     if (docs.isEmpty) return;
 
+    // CouchDB feeds the map function the winning revision PLUS a `_conflicts`
+    // member when the document is in conflict (REPLICATION_AND_CONFLICT_MODEL.md
+    // "View map functions"), so a view can locate conflicted docs via
+    // `if (doc._conflicts) emit(...)`. Fetch every conflicted doc's live
+    // (non-deleted) leaf revs once for this pass and inject `_conflicts` below.
+    // A doc's `seq` is bumped whenever its leaf set changes (see
+    // AppDatabase.updateDocumentSeq), so incremental re-indexing picks up a
+    // conflict appearing or being resolved. Non-conflicted docs (the common
+    // case) are fed their stored blob untouched — no extra cost.
+    final Map<int, List<String>> liveConflicts = await db.liveConflictRevsByDoc(
+      dbid,
+    );
+
     // start the javascript engine
     final jsEngine = JsEngine();
 
@@ -485,10 +498,23 @@ class ViewCtrl {
           continue;
         }
 
+        // Feed the winner plus `_conflicts` (CouchDB-faithful) when this doc has
+        // live conflict leaves; otherwise the stored blob verbatim.
+        final List<String>? docConflicts = liveConflicts[doc.document.id];
+        final String mapInput;
+        if (docConflicts != null && docConflicts.isNotEmpty) {
+          final Map<String, dynamic> withConflicts =
+              jsonDecode(doc.data!) as Map<String, dynamic>;
+          withConflicts['_conflicts'] = docConflicts;
+          mapInput = jsonEncode(withConflicts);
+        } else {
+          mapInput = doc.data!;
+        }
+
         // Execute map function for the document
         final mapResult = jsEngine.evaluate('''
           try {
-            mapFunction(${doc.data});
+            mapFunction($mapInput);
           } catch (e) {
             console.error('Map function error for doc ${doc.document.docid}: ' + e.toString());
             exception = e;

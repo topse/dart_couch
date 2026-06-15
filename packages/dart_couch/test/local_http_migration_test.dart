@@ -1,20 +1,11 @@
-import 'package:logging/logging.dart';
 import 'package:test/test.dart';
-import 'dart:convert';
 
 import 'package:dart_couch/dart_couch.dart';
 
 import 'helper/helper.dart';
 
 void main() {
-  Logger.root.level = Level.FINEST;
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   group('Local', () {
     late Directory lastCreatedDir;
@@ -35,14 +26,12 @@ void main() {
     late String? containerId;
 
     setUpAll(() async {
-      await shutdownAllCouchDbContainers();
       containerId = await startCouchDb(adminUser, adminPassword, false);
     });
 
     tearDownAll(() async {
       if (containerId != null) {
         await shutdownCouchDb(containerId!);
-        await shutdownAllCouchDbContainers();
         containerId = null;
       }
     });
@@ -51,19 +40,19 @@ void main() {
       createFreshServer: ({DatabaseMigration? migration}) async {
         // Clean up any existing testdb from previous test
         final temp = HttpDartCouchServer();
-        await temp.login('http://localhost:5984', adminUser, adminPassword);
+        await temp.login(couchUri, adminUser, adminPassword);
         try {
           await temp.deleteDatabase('testdb');
         } catch (_) {}
         await temp.logout();
 
         final server = HttpDartCouchServer(migration: migration);
-        await server.login('http://localhost:5984', adminUser, adminPassword);
+        await server.login(couchUri, adminUser, adminPassword);
         return server;
       },
       reopenServer: ({DatabaseMigration? migration}) async {
         final server = HttpDartCouchServer(migration: migration);
-        await server.login('http://localhost:5984', adminUser, adminPassword);
+        await server.login(couchUri, adminUser, adminPassword);
         return server;
       },
       disposeServer: (server) => (server as HttpDartCouchServer).logout(),
@@ -72,7 +61,7 @@ void main() {
     test('cache invalidation triggers migration on next access', () async {
       final migration = SimpleMigration(targetVersion: 1);
       final server = HttpDartCouchServer(migration: migration);
-      await server.login('http://localhost:5984', adminUser, adminPassword);
+      await server.login(couchUri, adminUser, adminPassword);
 
       try {
         // Clean up from previous tests
@@ -112,14 +101,12 @@ void main() {
       late String? dockerid;
 
       setUp(() async {
-        await shutdownAllCouchDbContainers();
         dockerid = await startCouchDb(adminUser, adminPassword, false);
       });
 
       tearDown(() async {
         if (dockerid != null) {
           await shutdownCouchDb(dockerid!);
-          await shutdownAllCouchDbContainers();
           dockerid = null;
         }
       });
@@ -138,7 +125,7 @@ void main() {
         // Setup HttpDartCouchServer
         final httpServer = HttpDartCouchServer(migration: httpMigration);
         await httpServer.login(
-          'http://localhost:5984',
+          couchUri,
           adminUser,
           adminPassword,
         );

@@ -11,14 +11,7 @@ import 'helper/helper.dart';
 void main() {
   DartCouchDb.ensureInitialized();
 
-  Logger.root.level = Level.FINEST;
-  Logger.root.onRecord.listen((record) {
-    final ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   CouchTestManager cm = CouchTestManager();
 

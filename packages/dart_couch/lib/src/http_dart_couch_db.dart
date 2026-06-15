@@ -93,14 +93,23 @@ class HttpDartCouchDb extends DartCouchDb
     bool revs = false,
     bool revsInfo = false,
     bool attachments = false,
+    bool conflicts = false,
+    bool deletedConflicts = false,
+    bool meta = false,
   }) async {
+    // `meta` is shorthand for conflicts + deleted_conflicts + revs_info.
+    final wantRevsInfo = revsInfo || meta;
+    final wantConflicts = conflicts || meta;
+    final wantDeletedConflicts = deletedConflicts || meta;
     http.Response res = await httpGet(
       "$dbname/$docid",
       queryParameters: {
         'rev': ?rev,
         if (revs == true) 'revs': 'true',
-        if (revsInfo == true) 'revs_info': 'true',
+        if (wantRevsInfo) 'revs_info': 'true',
         if (attachments == true) 'attachments': 'true',
+        if (wantConflicts) 'conflicts': 'true',
+        if (wantDeletedConflicts) 'deleted_conflicts': 'true',
       },
     );
     if (res.statusCode == CouchDbStatusCodes.notFound.code) {

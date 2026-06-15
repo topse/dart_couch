@@ -3,8 +3,6 @@
 import 'package:dart_mappable/dart_mappable.dart';
 import 'package:test/test.dart';
 import 'package:dart_couch/dart_couch.dart';
-import 'dart:convert';
-import 'package:logging/logging.dart';
 
 import 'helper/helper.dart';
 
@@ -12,14 +10,7 @@ part 'tree_view_test.mapper.dart';
 
 void main() {
 
-  Logger.root.level = Level.FINEST; // defaults to Level.INFO
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   group('HTTP', () {
     doTest(setUpAllHttpFunction, tearDownAllHttpFunction);

@@ -277,37 +277,34 @@ abstract class DartCouchDb with UseDartCouchMixin {
     String? view,
   });
 
-  /// get a document by its id
+  /// Raw version of [get] that returns the document as a JSON map, or null if
+  /// the document does not exist. Preserves all fields, including unknown
+  /// `!doc_type` discriminators.
   ///
-  /// rev             -> can load a special rev, even of a deleted document revision
-  /// revs = true     -> includes a list of all known document revisions
-  /// refsInfo = true -> includes detailed information for all known document revisions
-  ///                    ignored if openRefs is "all"
-  /// openRefs = {array} | "all" ->
-  ///        Retrieves documents of specified leaf revisions, even from deleted revisions.
-  ///        Additionally, it accepts value as all to return all leaf revisions.
-  ///        refsInfo is ignored if openRefs is used.
-  ///        "all" seems to make sens in combination with revs=true
-  ///
-  /// Returns:
-  /// It seems, if a deleted revision is loaded, in general a CouchDocumentBase
-  /// is returned.
-  /// Otherwise the received JSON-Document gets parsed with dart_mappable to
-  /// a subtype of CouchDocumentBase.
-  /// If the document has bee deleted and a new document with same ID created,
-  /// the revision list gets longer when openRefs=all and revs=true.
-
-  /// Raw version of get that returns the document as JSON string.
-  /// This preserves all fields including unknown !doc_type discriminators.
+  /// - [rev]: load a specific revision (even a deleted one).
+  /// - [revs]: include the list of known revision ids (`_revisions`).
+  /// - [revsInfo]: include detailed status for known revisions (`_revs_info`).
+  /// - [attachments]: inline attachment bodies instead of stubs.
+  /// - [conflicts]: include conflicting leaf revisions (`_conflicts`).
+  /// - [deletedConflicts]: include deleted conflicting revisions
+  ///   (`_deleted_conflicts`).
+  /// - [meta]: shorthand for [conflicts] + [deletedConflicts] + [revsInfo]
+  ///   (matches CouchDB's `meta` query parameter).
   Future<Map<String, dynamic>?> getRaw(
     String docid, {
     String? rev,
     bool revs = false,
     bool revsInfo = false,
     bool attachments = false,
+    bool conflicts = false,
+    bool deletedConflicts = false,
+    bool meta = false,
   });
 
-  /// Get a document by ID. Uses getRaw() internally and deserializes the result.
+  /// Get a document by ID, deserialized to a [CouchDocumentBase] subtype via
+  /// dart_mappable (a loaded deleted revision is generally returned as a plain
+  /// [CouchDocumentBase]). Returns null if the document does not exist. Uses
+  /// [getRaw] internally; see it for parameter semantics.
   @override
   Future<CouchDocumentBase?> get(
     String docid, {
@@ -315,6 +312,9 @@ abstract class DartCouchDb with UseDartCouchMixin {
     bool revs = false,
     bool revsInfo = false,
     bool attachments = false,
+    bool conflicts = false,
+    bool deletedConflicts = false,
+    bool meta = false,
   }) async {
     final map = await getRaw(
       docid,
@@ -322,12 +322,18 @@ abstract class DartCouchDb with UseDartCouchMixin {
       revs: revs,
       revsInfo: revsInfo,
       attachments: attachments,
+      conflicts: conflicts,
+      deletedConflicts: deletedConflicts,
+      meta: meta,
     );
     if (map == null) return null;
     return CouchDocumentBase.fromMap(map);
   }
 
-  /// if leafRevisions is null, "all" will be used!
+  /// Retrieves the documents of the specified leaf [revisions] — even deleted
+  /// ones. If [revisions] is null, "all" is used, returning every leaf revision
+  /// (most useful together with [revs]=true). Any `revsInfo` request is ignored
+  /// for open-revs.
   Future<List<OpenRevsResult>?> getOpenRevs(
     String docid, {
     List<String>? revisions,
@@ -584,6 +590,30 @@ abstract class DartCouchDb with UseDartCouchMixin {
   /// **Note:**
   /// Ensure that CouchDB is properly configured and accessible at the specified URL.
   Future<Map<String, RevsDiffEntry>> revsDiff(Map<String, List<String>> revs);
+
+  /// Records [rev] as a **known but bodyless conflict leaf** of [docId].
+  ///
+  /// Called by the replication puller when a leaf advertised by the source's
+  /// revision tree is permanently unrecoverable — every fetch path
+  /// (`_bulk_get`, `GET ?rev=`, `open_revs=[rev]`) returns `not_found/missing`,
+  /// e.g. a conflict branch whose body CouchDB has compacted away. Such a leaf
+  /// can never be transferred, but it is still a real leaf the source keeps in
+  /// `_conflicts` and re-advertises on every change.
+  ///
+  /// Recording it (a) makes [revsDiff] report it as **known**, so the puller
+  /// stops re-requesting it on every change (the residual re-pull churn), and
+  /// (b) makes it visible in `get(conflicts: true)` — both matching what the
+  /// source already reports, closing a real `LocalDartCouchDb` ↔
+  /// `HttpDartCouchDb` parity gap — so that an opt-in [DocumentConflictResolver]
+  /// can tombstone it (a tombstone needs only the rev id).
+  ///
+  /// No-op by default and for [HttpDartCouchDb] (a remote CouchDB already knows
+  /// its own leaves). [LocalDartCouchDb] records it as a `body == null`,
+  /// non-deleted conflict leaf; such a leaf is never selected as the winner and
+  /// is skipped by winner promotion (it has no body to serve). Idempotent and
+  /// safe to call repeatedly: an already-known rev (the winner, a known
+  /// ancestor, or an existing leaf) or an absent document is ignored.
+  Future<void> recordBodylessLeaf(String docId, String rev) async {}
 
   /// POST /{db}/_bulk_docs
   ///

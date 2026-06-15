@@ -4,17 +4,18 @@ import 'package:logging/logging.dart';
 
 import 'helper/helper.dart';
 
-// Capture log messages for verification
+// Capture log messages for verification.
+//
+// Unlike most tests, this suite *asserts* on log contents (logger name, time,
+// message), so it needs structured LogRecord objects. configureTestLogging()'s
+// internal buffer only keeps formatted strings for failure diagnostics, so we
+// register a second, independent listener here that captures full records.
+// (Same pattern as attachment_stub_optimization_test.dart.)
 final List<LogRecord> capturedLogs = [];
 
 void setupLogging() {
-  Logger.root.level = Level.ALL;
-  Logger.root.onRecord.listen((record) {
-    capturedLogs.add(record);
-    // Optionally print for debugging
-    // ignore: avoid_print
-    print('${record.level.name}: ${record.time}: ${record.message}');
-  });
+  configureTestLogging();
+  Logger.root.onRecord.listen(capturedLogs.add);
 }
 
 void clearLogs() {
@@ -45,7 +46,6 @@ void main() {
       clearLogs();
 
       // Start fresh CouchDB container
-      await shutdownAllCouchDbContainers();
       dockerId = await startCouchDb(adminUser, adminPassword, false);
 
       // Create fresh SQLite file
@@ -70,7 +70,7 @@ void main() {
     test('pause() should be idempotent', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,
@@ -93,7 +93,7 @@ void main() {
     test('resume() should be idempotent', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,
@@ -120,7 +120,7 @@ void main() {
     test('pause() stops health monitoring', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,
@@ -187,7 +187,7 @@ void main() {
     test('resume() restarts health monitoring', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,
@@ -242,7 +242,7 @@ void main() {
     test('pause/resume cycle preserves state', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,
@@ -272,7 +272,7 @@ void main() {
       () async {
         // Login first to initialize the server
         final loginResult = await server.login(
-          'http://localhost:5984',
+          couchUri,
           adminUser,
           adminPassword,
           localFile,
@@ -333,7 +333,7 @@ void main() {
     test('pause() stops all database replications', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,
@@ -378,7 +378,7 @@ void main() {
     test('resume() restarts all database replications', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,
@@ -446,7 +446,7 @@ void main() {
     test('pause/resume cycle syncs data correctly', () async {
       // Login first to initialize the server
       final loginResult = await server.login(
-        'http://localhost:5984',
+        couchUri,
         adminUser,
         adminPassword,
         localFile,

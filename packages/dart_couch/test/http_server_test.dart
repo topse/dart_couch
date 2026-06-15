@@ -6,16 +6,15 @@ import 'helper/helper.dart';
 void main() {
 
   test('connection state offline', () async {
-    await shutdownAllCouchDbContainers();
-
     final httpServer = HttpDartCouchServer();
     expect(
       httpServer.connectionState.value,
       DartCouchConnectionState.disconnected,
     );
 
+    // No container started for this suite: point at a free (dead) port.
     final loginResult = await httpServer.login(
-      'http://localhost:5984',
+      await deadCouchUri(),
       adminUser,
       adminPassword,
     );
@@ -33,7 +32,6 @@ void main() {
   });
 
   test('connection state online', () async {
-    await shutdownAllCouchDbContainers();
     HttpDartCouchServer httpServer =
         await setUpAllHttpFunction() as HttpDartCouchServer;
 
@@ -52,16 +50,17 @@ void main() {
   });
 
   test('connection state changing synchronous', () async {
-    await shutdownAllCouchDbContainers();
-
     final httpServer = HttpDartCouchServer();
     expect(
       httpServer.connectionState.value,
       DartCouchConnectionState.disconnected,
     );
 
+    // Phase 1: reserve this suite's port but start no container yet, so couchUri
+    // is a dead address. Logging in exercises the network-error path.
+    await reserveCouchPort();
     LoginResult? loginResult = await httpServer.login(
-      'http://localhost:5984',
+      couchUri,
       adminUser,
       adminPassword,
     );
@@ -71,10 +70,13 @@ void main() {
       DartCouchConnectionState.loginFailedWithNetworkError,
     );
 
-    dockerid = await startCouchDb(adminUser, adminPassword, false);
+    // Phase 2: bring up the container on the SAME reserved port, so the server
+    // relogs in at the exact address it just failed on (true relogin), not a
+    // different one.
+    dockerid = await startCouchDb(adminUser, adminPassword, false, port: couchPort);
 
     loginResult = await httpServer.login(
-      'http://localhost:5984',
+      couchUri,
       adminUser,
       "jjj",
     );
@@ -87,7 +89,7 @@ void main() {
     );
 
     loginResult = await httpServer.login(
-      'http://localhost:5984',
+      couchUri,
       adminUser,
       adminPassword,
     );
@@ -128,7 +130,9 @@ void main() {
       httpServer.connectionState.value,
       DartCouchConnectionState.disconnected,
     );
-    await pauseCouchDbContainer(dockerid!);
+    // Remove this suite's container so it doesn't linger after the test.
+    await shutdownCouchDb(dockerid!);
+    dockerid = null;
   });
 
   test('User management', () async {
@@ -238,7 +242,6 @@ void main() {
   });
 
   test('db updates', () async {
-    await shutdownAllCouchDbContainers();
     HttpDartCouchServer httpServer =
         await setUpAllHttpFunction() as HttpDartCouchServer;
 

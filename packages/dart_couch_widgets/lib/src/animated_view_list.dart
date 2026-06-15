@@ -1,4 +1,5 @@
 import 'dart:async';
+import 'dart:convert';
 
 import 'package:dart_couch/dart_couch.dart';
 import 'package:flutter/widgets.dart';
@@ -51,8 +52,11 @@ class _ViewListSync {
   final void Function(int index) onInsert;
 
   /// Animate a row out from [index] (already removed from [rows]); [removed] is
-  /// the row to render while it fades.
-  final void Function(int index, ViewEntry removed) onRemove;
+  /// the row to render while it fades. [isMove] is true when this removal is one
+  /// half of a move (the same row is re-inserted elsewhere in the same batch) —
+  /// the caller should then skip the exit animation so the stale row does not
+  /// linger at its old slot (see [_apply]).
+  final void Function(int index, ViewEntry removed, bool isMove) onRemove;
 
   /// A row changed in place: rebuild to pick up the new content.
   final VoidCallback onChange;
@@ -80,6 +84,16 @@ class _ViewListSync {
   }
 
   void _apply(List<ViewRowChange> changes) {
+    // A row that is both removed and inserted in the same batch is a *move*
+    // (it was re-sorted to a new position — e.g. a list item that was checked
+    // off and now sorts below the unchecked ones). AnimatedList has no move
+    // primitive, so ViewDiff expresses it as remove + insert. Animating the
+    // removal would leave the row's *old* content (the pre-edit value) visibly
+    // fading out at its previous slot for the whole remove duration, which
+    // reads as a flicker — most noticeably when the old slot is the one the
+    // user is looking at. So for moves we remove instantly and animate only the
+    // insertion at the new slot.
+    final movedIds = _movedIdentities(changes);
     for (final change in changes) {
       switch (change) {
         case ViewRowInserted(:final index, :final row):
@@ -87,13 +101,33 @@ class _ViewListSync {
           onInsert(index);
         case ViewRowRemoved(:final index, :final row):
           rows.removeAt(index);
-          onRemove(index, row);
+          onRemove(index, row, movedIds.contains(_identity(row)));
         case ViewRowChanged(:final index, :final row):
           rows[index] = row;
           onChange();
       }
     }
   }
+
+  /// Identities (id + emit key) that appear as both a removal and an insertion
+  /// in [changes] — i.e. rows that moved rather than genuinely came/went.
+  static Set<String> _movedIdentities(List<ViewRowChange> changes) {
+    final removed = <String>{};
+    final inserted = <String>{};
+    for (final c in changes) {
+      switch (c) {
+        case ViewRowRemoved(:final row):
+          removed.add(_identity(row));
+        case ViewRowInserted(:final row):
+          inserted.add(_identity(row));
+        case ViewRowChanged():
+          break;
+      }
+    }
+    return removed.intersection(inserted);
+  }
+
+  static String _identity(ViewEntry row) => jsonEncode([row.id, row.key]);
 
   /// Drop all state so a new stream starts from a fresh snapshot.
   void reset() {
@@ -170,10 +204,10 @@ class _AnimatedViewListState extends State<AnimatedViewList> {
       index,
       duration: widget.insertDuration,
     ),
-    onRemove: (index, removed) => _listKey.currentState?.removeItem(
+    onRemove: (index, removed, isMove) => _listKey.currentState?.removeItem(
       index,
       (context, animation) => _buildRemoved(context, removed, animation),
-      duration: widget.removeDuration,
+      duration: isMove ? Duration.zero : widget.removeDuration,
     ),
     onChange: () {
       if (mounted) setState(() {});
@@ -287,10 +321,10 @@ class _SliverAnimatedViewListState extends State<SliverAnimatedViewList> {
       index,
       duration: widget.insertDuration,
     ),
-    onRemove: (index, removed) => _listKey.currentState?.removeItem(
+    onRemove: (index, removed, isMove) => _listKey.currentState?.removeItem(
       index,
       (context, animation) => _buildRemoved(context, removed, animation),
-      duration: widget.removeDuration,
+      duration: isMove ? Duration.zero : widget.removeDuration,
     ),
     onChange: () {
       if (mounted) setState(() {});

@@ -6,7 +6,9 @@ import 'value_notifier.dart';
 import 'package:http/http.dart' as http;
 import 'package:logging/logging.dart';
 import 'api_result.dart';
+import 'conflict_resolution_internal.dart';
 import 'dart_couch_db.dart';
+import 'local_storage_engine/calculate_couch_db_new_rev.dart';
 import 'messages/bulk_get.dart';
 import 'messages/bulk_get_multipart.dart';
 import 'messages/couch_db_status_codes.dart';
@@ -157,14 +159,14 @@ mixin CouchReplicationMixin on DartCouchDb {
     DartCouchDb target, {
     bool live = false,
     ReplicationDirection direction = ReplicationDirection.both,
-    required DocumentReplicationConflictResolver onConflict,
+    DocumentConflictResolver? resolver,
   }) {
     final controller = _CouchReplicationController(
       source: this,
       target: target,
       live: live,
       direction: direction,
-      conflictResolver: onConflict,
+      conflictResolver: resolver,
     );
 
     controller._start();
@@ -177,7 +179,11 @@ class _CouchReplicationController implements ReplicationController {
   final DartCouchDb target;
   final bool live;
   final ReplicationDirection direction;
-  final DocumentReplicationConflictResolver conflictResolver;
+
+  /// Opt-in conflict resolver (Decision B/C). `null` = preserve conflicts (the
+  /// faithful default, exactly like CouchDB). When set, [_resolveConflicts] runs
+  /// after the conflicting leaves are transferred.
+  final DocumentConflictResolver? conflictResolver;
 
   bool _paused = false;
   bool _stopped = false;
@@ -275,7 +281,7 @@ class _CouchReplicationController implements ReplicationController {
     required this.target,
     required this.live,
     required this.direction,
-    required this.conflictResolver,
+    this.conflictResolver,
   }) {
     // Generate a unique session ID for this replication session
     _sessionId = _generateSessionId();
@@ -389,6 +395,16 @@ class _CouchReplicationController implements ReplicationController {
         // replication (and restarts) can resume from here.
         if (!_stopped) {
           _scheduleCheckpoint();
+        }
+
+        // The initial bidirectional sync is complete → the local replica now
+        // holds the COMPLETE leaf set for every document, so it is safe to do a
+        // one-time "complete run" of opt-in conflict resolution (Decision C).
+        // This is what collapses pre-existing conflict trees on startup. No-op
+        // without a resolver; resolution writes replicate via continuous/next
+        // sync.
+        if (!_stopped) {
+          await _resolveCaughtUpConflicts();
         }
 
         if (live && !_stopped) {
@@ -909,6 +925,195 @@ class _CouchReplicationController implements ReplicationController {
     }
   }
 
+  /// Guards against overlapping resolution sweeps (its own writes re-trigger
+  /// the caught-up check).
+  bool _resolving = false;
+
+  /// Resolves all currently-conflicted documents — a **complete run** performed
+  /// only when replication is caught up, so each conflict is resolved against
+  /// its full leaf set (Decisions B/C; safety note in [_maybeResolveConflict]).
+  ///
+  /// Discovery is the cheap conflict index ([LocalConflictSource.conflictedDocIds]
+  /// — one indexed, ids-only query, no document-body loads, no full scan), so it
+  /// adds nothing to the optimized per-document replication path; it runs after
+  /// the per-doc work, when the database is otherwise idle. No-op unless a
+  /// resolver is configured and the source is a conflict-storing local replica.
+  Future<void> _resolveCaughtUpConflicts() async {
+    if (conflictResolver == null || _resolving || _stopped) return;
+    final src = source;
+    if (src is! LocalConflictSource) return; // only a local replica can enumerate
+    final localSrc = src as LocalConflictSource;
+    _resolving = true;
+    try {
+      final ids = await localSrc.conflictedDocIds();
+      for (final docId in ids) {
+        if (_stopped) break;
+        // Per-document isolation + preserve-on-failure (data-safety strategy):
+        // a throwing/buggy resolver, a write error, or a transient failure on
+        // ONE document must never abort the sweep or corrupt state. The doc is
+        // left conflicted (preserved, exactly like the no-resolver default) and
+        // is retried on the next caught-up sweep. Data integrity does not depend
+        // on the resolver being correct — a tombstone only ever affects the exact
+        // losing rev (a concurrent descendant survives), and the writes are
+        // local-first + resumable, so the worst case is "still conflicted",
+        // never lost/corrupted data.
+        try {
+          await _maybeResolveConflict(docId);
+        } catch (e, st) {
+          _repLog.warning(
+            'Conflict resolution failed for "$docId" — leaving it conflicted '
+            '(will retry on the next caught-up sweep): $e',
+            e,
+            st,
+          );
+        }
+      }
+    } catch (e, st) {
+      _repLog.warning('Conflict resolution sweep failed: $e', e, st);
+    } finally {
+      _resolving = false;
+    }
+  }
+
+  /// Opt-in conflict resolution for a single document (Decisions B/C).
+  ///
+  /// No-op unless a [conflictResolver] is configured. Discovers the document's
+  /// live conflict via the existing per-doc `get(conflicts:true)` (no scan, no
+  /// enumeration), asks the resolver for a survivor, then — a separate phase on
+  /// top of the faithful transfer — writes the survivor as a child of the winner
+  /// and tombstones every losing leaf. Those edits replicate like any other
+  /// change.
+  ///
+  /// Deterministic + idempotent: same survivor + same parent revs ⇒ identical
+  /// new revs on every device (so two devices resolving the same conflict
+  /// converge instead of fighting), and a document with no live conflict returns
+  /// immediately (re-running never loops). Pre-existing conflicts that nothing
+  /// touches simply stay until the document is next edited anywhere — exactly as
+  /// without resolution; no proactive repair sweep is needed.
+  ///
+  /// Attachment safety: keeping the winner unchanged (e.g. [KeepWinnerResolver])
+  /// only tombstones losers and never rewrites the winner, so its attachments
+  /// survive. A *merged* survivor for a doc that carries attachments is skipped
+  /// with a warning (putRaw cannot carry attachment bodies forward) — the
+  /// conflict is left intact rather than risk dropping attachment data.
+  Future<void> _maybeResolveConflict(String docId) async {
+    final resolver = conflictResolver;
+    if (resolver == null) return;
+    // Conflicts live in the local replica = the replication source.
+    final db = source;
+
+    final winnerMap = await db.getRaw(docId, conflicts: true);
+    if (winnerMap == null) return; // gone / tombstoned
+    final conflictRevs =
+        (winnerMap['_conflicts'] as List?)?.cast<String>() ?? const <String>[];
+    if (conflictRevs.isEmpty) return; // not in conflict → nothing to do
+    final winnerRev = winnerMap['_rev'] as String?;
+    if (winnerRev == null) return;
+
+    final winnerHasAttachments =
+        (winnerMap['_attachments'] as Map?)?.isNotEmpty ?? false;
+
+    // Losing leaf bodies (per-doc reads, only for this conflicted doc).
+    //
+    // A bodyless ("not_found") losing leaf — a permanently-gone conflict branch
+    // recorded via [DartCouchDb.recordBodylessLeaf] — reads back as null and is
+    // EXCLUDED from resolution (only [fetchableRevs] are resolved/tombstoned). It
+    // has no body to merge, and tombstoning it would be both **useless** and
+    // **harmful**:
+    //   - useless: CouchDB does NOT collapse a compacted-body leaf when a
+    //     tombstone child is grafted onto it — the original bodyless leaf stays
+    //     in `_conflicts` and the tombstone just becomes another deleted leaf
+    //     (verified against a live server). Such leaves are only removable by
+    //     `_purge`, which does not replicate.
+    //   - harmful: tombstoning removes the leaf's local record, so revsDiff
+    //     re-requests it on the next change → re-record → re-tombstone churn,
+    //     and the per-write seq bumps re-emit the doc to the changes feed.
+    // So a bodyless leaf is left preserved, exactly as CouchDB keeps it; the
+    // recording alone is what stops the re-pull churn.
+    final conflictDocs = <CouchDocumentBase>[];
+    final fetchableRevs = <String>[];
+    for (final cr in conflictRevs) {
+      final body = await db.getRaw(docId, rev: cr);
+      if (body != null) {
+        conflictDocs.add(CouchDocumentBase.fromMap(body));
+        fetchableRevs.add(cr);
+      }
+    }
+    if (fetchableRevs.isEmpty) return; // only bodyless leaves remain — nothing to do
+
+    final cleanWinner = Map<String, dynamic>.from(winnerMap)
+      ..remove('_conflicts')
+      ..remove('_deleted_conflicts')
+      ..remove('_revs_info');
+    final CouchDocumentBase? survivor = await resolver.resolve(
+      ConflictedDocument(
+        docId: docId,
+        winner: CouchDocumentBase.fromMap(cleanWinner),
+        conflicts: conflictDocs,
+      ),
+    );
+    if (survivor == null) return; // app chose to keep the conflict
+
+    // Does the survivor keep the winning revision unchanged (e.g.
+    // KeepWinnerResolver returns doc.winner, whose rev == winnerRev)? Then never
+    // rewrite the winner — just tombstone the losers — which also preserves the
+    // winner's attachments.
+    final keepsWinner = survivor.rev == winnerRev;
+    if (!keepsWinner) {
+      if (winnerHasAttachments) {
+        _repLog.warning(
+          'Skipping conflict resolution for "$docId": a merged survivor would '
+          'drop the winning revision\'s attachments (putRaw carries no '
+          'attachment bodies). Leaving the conflict intact.',
+        );
+        return;
+      }
+      // Write the survivor as a child of the current winner (deterministic rev).
+      final survivorMap = survivor.toMap()
+        ..['_id'] = docId
+        ..['_rev'] = winnerRev
+        ..remove('_revisions')
+        ..remove('_conflicts')
+        ..remove('_deleted_conflicts')
+        ..remove('_revs_info')
+        ..remove('_attachments');
+      await db.putRaw(survivorMap);
+    }
+
+    // Tombstone each FETCHABLE losing leaf: a deterministic deleted child of Ci,
+    // delivered via the faithful newEdits=false path (which collapses that branch
+    // to a deleted leaf). Same inputs → same tombstone rev on every device.
+    // Bodyless leaves are intentionally excluded (see [fetchableRevs] above).
+    final tombstones = <String>[];
+    for (final cr in fetchableRevs) {
+      final tombRev = calculateCouchDbNewRev(
+        {'_id': docId, '_deleted': true},
+        cr,
+      );
+      final ciHash = cr.substring(cr.indexOf('-') + 1);
+      final tombHash = tombRev.substring(tombRev.indexOf('-') + 1);
+      final start = int.parse(tombRev.split('-').first);
+      tombstones.add(
+        jsonEncode({
+          '_id': docId,
+          '_rev': tombRev,
+          '_deleted': true,
+          '_revisions': {
+            'start': start,
+            'ids': [tombHash, ciHash],
+          },
+        }),
+      );
+    }
+    if (tombstones.isNotEmpty) {
+      await db.bulkDocsRaw(tombstones, newEdits: false);
+    }
+    _repLog.info(
+      'Resolved conflict for "$docId": collapsed ${fetchableRevs.length} '
+      'losing leaf/leaves into a single surviving revision.',
+    );
+  }
+
   /// Creates a continuous changes stream from [from] to [to].
   StreamSubscription<Map<String, dynamic>> _createChangeStream(
     DartCouchDb from,
@@ -1118,16 +1323,38 @@ class _CouchReplicationController implements ReplicationController {
                       _transferredDocs++;
                       _writtenBytes += jsonEncode(normalizedDoc).length;
                     } else if (result is BulkGetMultipartFailure) {
-                      processedKeys.add('${result.id}:${result.rev ?? ""}');
+                      // CouchDB's multipart error parts carry no id; recover it
+                      // from the request so the retry targets the right doc and
+                      // the processed-key matches the fallback loop's key.
+                      final failId = _recoverFailureId(result, bulkGetDocs);
                       final rev = result.rev;
-                      _repLog.warning(
-                        'Bulk fetch failed for document ${result.id} rev $rev: '
-                        '${result.error} - ${result.reason}',
-                      );
-                      if (rev != null) {
-                        failedDocs.add(
-                          BulkGetRequestDoc(id: result.id, rev: rev),
+                      processedKeys.add('$failId:${rev ?? ""}');
+                      if (_isRevisionGone(result)) {
+                        // Revision body is gone on the source (e.g. a compacted
+                        // conflict branch). It can never be transferred — skip
+                        // it so the checkpoint can advance instead of retrying
+                        // forever and blocking sync on this change.
+                        _repLog.fine(
+                          'Skipping unrecoverable revision $rev for document '
+                          '$failId: ${result.error} - ${result.reason}',
                         );
+                        // Record it as a known bodyless leaf so revsDiff stops
+                        // re-requesting it on every change (the residual churn)
+                        // and an opt-in resolver can tombstone it. No-op unless
+                        // [to] is a LocalDartCouchDb (PLAN.md Phase 1 polish).
+                        if (rev != null && failId.isNotEmpty) {
+                          await to.recordBodylessLeaf(failId, rev);
+                        }
+                      } else {
+                        _repLog.warning(
+                          'Bulk fetch failed for document $failId rev $rev: '
+                          '${result.error} - ${result.reason}',
+                        );
+                        if (rev != null && failId.isNotEmpty) {
+                          failedDocs.add(
+                            BulkGetRequestDoc(id: failId, rev: rev),
+                          );
+                        }
                       }
                     }
 
@@ -1270,6 +1497,17 @@ class _CouchReplicationController implements ReplicationController {
                     _pendingPullDocs -= totalToWrite;
                   }
                   _notify();
+
+                  // Opt-in conflict resolution (Decision B/C) — runs ONLY when
+                  // replication is caught up (both directions idle), so the local
+                  // replica holds the COMPLETE leaf set for each conflicted doc
+                  // (resolving a partial set mid-stream would pick a wrong
+                  // survivor and diverge). Discovery is the cheap conflict index
+                  // (ids-only), never the per-doc hot loop — see
+                  // [_resolveCaughtUpConflicts].
+                  if (_pendingPushDocs <= 0 && _pendingPullDocs <= 0) {
+                    await _resolveCaughtUpConflicts();
+                  }
 
                   // Only save checkpoint after successful replication
                   if (seq != null) {
@@ -2002,24 +2240,41 @@ class _CouchReplicationController implements ReplicationController {
           }
         }
       } else if (result is BulkGetMultipartFailure) {
-        _repLog.warning(
-          'Bulk fetch failed for document ${result.id} rev ${result.rev}: '
-          '${result.error} - ${result.reason}',
-        );
-        if (result.rev != null) {
+        // CouchDB's multipart error parts carry no id; recover it from the
+        // request group this result belongs to.
+        final failId = _recoverFailureId(result, pipelineResult.group);
+        if (_isRevisionGone(result)) {
+          // Revision body is gone on the source (e.g. a compacted conflict
+          // branch). It can never be transferred — skip it cleanly.
+          _repLog.fine(
+            'Skipping unrecoverable revision ${result.rev} for document '
+            '$failId: ${result.error} - ${result.reason}',
+          );
+          processedKeys.add('$failId:${result.rev ?? ""}');
+          // Record it as a known bodyless leaf so revsDiff stops re-requesting
+          // it every cycle and an opt-in resolver can tombstone it. No-op
+          // unless [to] is a LocalDartCouchDb (PLAN.md Phase 1 polish).
+          if (result.rev != null && failId.isNotEmpty) {
+            await to.recordBodylessLeaf(failId, result.rev!);
+          }
+        } else if (result.rev != null && failId.isNotEmpty) {
+          _repLog.warning(
+            'Bulk fetch failed for document $failId rev ${result.rev}: '
+            '${result.error} - ${result.reason}',
+          );
           await _fetchAndWriteIndividual(
             from,
             to,
-            BulkGetRequestDoc(id: result.id, rev: result.rev!),
+            BulkGetRequestDoc(id: failId, rev: result.rev!),
             totalRevsToFetch,
           );
-          processedKeys.add('${result.id}:${result.rev}');
+          processedKeys.add('$failId:${result.rev}');
         } else {
           _repLog.warning(
-            'Bulk fetch failure for ${result.id} has no rev '
+            'Bulk fetch failure for "$failId" has no rev '
             '— cannot retry individually, skipping',
           );
-          processedKeys.add('${result.id}:');
+          processedKeys.add('$failId:');
         }
         _docsFetching--;
         _docsFetchComplete++;
@@ -2086,6 +2341,41 @@ class _CouchReplicationController implements ReplicationController {
       );
     }
   }
+
+  /// Recovers the document id for a [BulkGetMultipartFailure].
+  ///
+  /// CouchDB's multipart `_bulk_get` error parts contain only
+  /// `{rev, error, reason}` with **no id** (verified against a live server),
+  /// so [BulkGetMultipartFailure.id] arrives empty. The id is recovered here by
+  /// matching the failed `rev` against the request docs. Without this, an empty
+  /// id is propagated into the retry path, where `getRaw('')` hits the database
+  /// root and returns a non-document map, which then fails to write with
+  /// "Document must have a _rev for new_edits=false" and blocks the checkpoint.
+  String _recoverFailureId(
+    BulkGetMultipartFailure failure,
+    List<BulkGetRequestDoc> requestDocs,
+  ) {
+    if (failure.id.isNotEmpty) return failure.id;
+    final rev = failure.rev;
+    if (rev != null) {
+      for (final d in requestDocs) {
+        if (d.rev == rev) return d.id;
+      }
+    }
+    return '';
+  }
+
+  /// Whether a `_bulk_get` failure is permanent because the revision body no
+  /// longer exists on the source (CouchDB reports `not_found`/`missing`).
+  ///
+  /// This happens for compacted conflict branches: the leaf rev is still listed
+  /// in the changes feed (`style=all_docs`) and reported missing by `revsDiff`,
+  /// but its body was removed by compaction and can never be fetched. Such a
+  /// revision must be skipped so the checkpoint can advance — matching CouchDB's
+  /// own replicator, which logs missing revisions and continues rather than
+  /// retrying them forever. Other errors (transient/parse) are still retried.
+  bool _isRevisionGone(BulkGetMultipartFailure failure) =>
+      failure.error == 'not_found' || failure.reason == 'missing';
 
   static String _formatBytes(int bytes) {
     if (bytes < 1024) return '${bytes}B';

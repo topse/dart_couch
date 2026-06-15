@@ -106,10 +106,9 @@ mixin HealthMonitoring {
                 );
                 await _attemptRelogin();
               } else {
-                // Session is valid
-                _healthLog.fine(
-                  'Session valid — state=${state.value}, _networkDegraded=$_networkDegraded',
-                );
+                // Session is valid. One log line per tick (the previous code
+                // logged twice): the common "no action" case stays at FINE; the
+                // rarer recovery case logs at INFO.
                 if (state.value != .normalOnline || _networkDegraded) {
                   // onBackOnline() already calls invokeRecoveryCallbacks() via
                   // _performBackOnlineWork(). Do NOT call it a second time here
@@ -124,7 +123,8 @@ mixin HealthMonitoring {
                   _networkDegraded = false;
                 } else {
                   _healthLog.fine(
-                    'Session valid + already normalOnline + no network degradation — no action needed',
+                    'Session valid, already normalOnline, no network degradation '
+                    '— no action needed (state=${state.value})',
                   );
                 }
               }

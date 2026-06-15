@@ -2,7 +2,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:dart_couch/dart_couch.dart';
 import 'package:test/test.dart';
-import 'package:logging/logging.dart';
 import 'helper/couch_test_manager.dart';
 import 'helper/einkaufslist_item.dart';
 import 'helper/helper.dart';
@@ -11,14 +10,7 @@ enum DbMode { http, local, offline }
 
 void main() {
 
-  Logger.root.level = Level.FINEST;
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   final cm = CouchTestManager();
 

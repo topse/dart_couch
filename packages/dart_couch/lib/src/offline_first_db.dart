@@ -58,7 +58,9 @@ class OfflineFirstDb extends DartCouchDb {
   final void Function() notifyNetworkDegraded;
   final void Function(Future<void> Function()) registerRecoveryCallback;
   final void Function(Future<void> Function()) unregisterRecoveryCallback;
-  final DocumentReplicationConflictResolver conflictResolver;
+  /// Opt-in conflict resolver, forwarded to `syncTo` (Decision C). `null` =
+  /// preserve conflicts (faithful default).
+  final DocumentConflictResolver? conflictResolver;
 
   final _ProxyReplicationController _proxyController =
       _ProxyReplicationController();
@@ -78,7 +80,7 @@ class OfflineFirstDb extends DartCouchDb {
     required this.registerRecoveryCallback,
     required this.unregisterRecoveryCallback,
     this.migration,
-    required this.conflictResolver,
+    this.conflictResolver,
   }) : migrationState = DcValueNotifier(migration == null ? .matched : .tooOld);
 
   Future<void> _myRecoveryCallback() async {
@@ -290,7 +292,7 @@ class OfflineFirstDb extends DartCouchDb {
         final controller = localDb.syncTo(
           db,
           live: true,
-          onConflict: conflictResolver,
+          resolver: conflictResolver,
         );
         _log.fine('Starting sync controller for $dbname (local -> remote)');
         await _proxyController.setDelegate(controller);
@@ -443,6 +445,9 @@ class OfflineFirstDb extends DartCouchDb {
     bool revs = false,
     bool revsInfo = false,
     bool attachments = false,
+    bool conflicts = false,
+    bool deletedConflicts = false,
+    bool meta = false,
   }) {
     return localDb.getRaw(
       docid,
@@ -450,6 +455,9 @@ class OfflineFirstDb extends DartCouchDb {
       revs: revs,
       revsInfo: revsInfo,
       attachments: attachments,
+      conflicts: conflicts,
+      deletedConflicts: deletedConflicts,
+      meta: meta,
     );
   }
 
@@ -619,6 +627,13 @@ class OfflineFirstDb extends DartCouchDb {
   Future<Map<String, RevsDiffEntry>> revsDiff(Map<String, List<String>> revs) {
     return localDb.revsDiff(revs);
   }
+
+  @override
+  Future<void> recordBodylessLeaf(String docId, String rev) {
+    // A permanently-gone leaf is recorded on the LOCAL replica (the pull target).
+    return localDb.recordBodylessLeaf(docId, rev);
+  }
+
 
   @override
   Future<List<BulkDocsResult>> bulkDocsRaw(

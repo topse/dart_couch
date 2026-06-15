@@ -4,7 +4,6 @@ import 'dart:convert';
 
 import 'package:dart_couch/dart_couch.dart';
 import 'package:test/test.dart';
-import 'package:logging/logging.dart';
 
 import 'helper/helper.dart';
 import 'helper/test_document_one.dart';
@@ -24,14 +23,7 @@ final Uint8List _textContent = Uint8List.fromList(
 void main() {
   DartCouchDb.ensureInitialized();
 
-  Logger.root.level = Level.FINEST;
-  Logger.root.onRecord.listen((record) {
-    final ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   // ---------------------------------------------------------------------------
   // HTTP-to-local replication: encoding field is preserved after sync
@@ -42,7 +34,6 @@ void main() {
     late String dockerContainerId;
 
     setUp(() async {
-      await shutdownAllCouchDbContainers();
       dockerContainerId = await startCouchDb(adminUser, adminPassword, false);
       httpServer = HttpDartCouchServer();
       await doLogin(httpServer, adminUser, adminPassword);
@@ -53,7 +44,6 @@ void main() {
       await localServer.dispose();
       await httpServer.logout();
       await shutdownCouchDb(dockerContainerId);
-      await shutdownAllCouchDbContainers();
     });
 
     // Replicate one doc/rev from [httpDb] to [localDb] via

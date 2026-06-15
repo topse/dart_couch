@@ -1,6 +1,6 @@
 name: dart_couch
 description: "A Dart binding for CouchDB with offline first capabilities, with ideas from PouchDB which I loved very much in the JS world."
-version: 0.9.26+1
+version: 1.0.0+1
 homepage:
 
 environment:
@@ -29,4 +29,5 @@ dev_dependencies:
   lints: ^6.0.0
   dart_mappable_builder: ^4.7.0
   test: ^1.26.2
+  test_api: ^0.7.6
   flutter_lints: ^6.0.0

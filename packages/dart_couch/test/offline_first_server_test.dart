@@ -1,7 +1,5 @@
-import 'dart:convert';
 
 import 'package:test/test.dart';
-import 'package:logging/logging.dart';
 
 import 'package:dart_couch/dart_couch.dart';
 
@@ -9,14 +7,7 @@ import 'helper/helper.dart';
 
 void main() {
 
-  Logger.root.level = Level.FINEST; // defaults to Level.INFO
-  Logger.root.onRecord.listen((record) {
-    LineSplitter ls = LineSplitter();
-    for (final line in ls.convert(record.message)) {
-      // ignore: avoid_print
-      print('${record.loggerName} ${record.level.name}: ${record.time}: $line');
-    }
-  });
+  configureTestLogging();
 
   test('try connect to offline server (should fail)', () async {
     // Test first-time login attempt when server is offline
@@ -24,11 +15,9 @@ void main() {
 
     final ofs = OfflineFirstServer();
 
-    await shutdownAllCouchDbContainers();
-
-    // Try to login to an offline/unreachable server
+    // Try to login to an offline/unreachable server (no container started).
     final loginResult = await ofs.login(
-      'http://localhost:5984',
+      await deadCouchUri(),
       'testuser',
       'testpass',
       localPath,
@@ -1317,13 +1306,12 @@ void main() {
     'create user as admin, login with OfflineFirstServer without admin, create document and verify replication',
     () async {
       // Start CouchDB
-      await shutdownAllCouchDbContainers();
       dockerid = await startCouchDb(adminUser, adminPassword, false);
 
       // Login as admin
       final adminServer = HttpDartCouchServer();
       final adminLogin = await adminServer.login(
-        "http://localhost:5984",
+        couchUri,
         adminUser,
         adminPassword,
       );
@@ -1344,7 +1332,7 @@ void main() {
       final localPath = prepareSqliteDir();
       final ofs = OfflineFirstServer();
       final userLogin = await ofs.login(
-        "http://localhost:5984",
+        couchUri,
         user,
         password,
         localPath,
@@ -1398,7 +1386,6 @@ void main() {
       await ofs.dispose();
       await adminServer.logout();
       await shutdownCouchDb(dockerid!);
-      await shutdownAllCouchDbContainers();
       dockerid = null;
     },
   );
