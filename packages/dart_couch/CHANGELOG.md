@@ -1,3 +1,6 @@
+## 1.0.4
+* comments for code generation: dont forget to run on version update
+
 ## 1.0.2
 * log dart_couch version on startup
 
