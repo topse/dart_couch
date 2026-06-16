@@ -1,3 +1,6 @@
+## 1.0.2
+* log dart_couch version on startup
+
 ## 1.0.0
 * add conflict resolver
 

@@ -1,7 +1,10 @@
 import 'dart:convert';
 import 'dart:typed_data';
 
+import 'package:logging/logging.dart';
+
 import '../dart_couch.init.dart';
+import 'version.dart';
 import 'messages/bulk_docs_result.dart';
 import 'messages/bulk_get.dart';
 import 'messages/bulk_get_multipart.dart';
@@ -13,12 +16,15 @@ import 'messages/revs_diff_result.dart';
 import 'messages/view_result.dart';
 import 'use_dart_couch.dart';
 
+final Logger _log = Logger('dart_couch');
+
 abstract class DartCouchDb with UseDartCouchMixin {
   String dbname;
 
   DartCouchDb({required this.dbname});
 
   static void ensureInitialized() {
+    _log.info('dart_couch version $packageVersion');
     initializeMappers();
   }
 
