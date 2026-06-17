@@ -1,3 +1,6 @@
+##  1.0.6
+* add helper SaveDocWriter, LiveDocHandle
+
 ## 1.0.4
 * comments for code generation: dont forget to run on version update
 

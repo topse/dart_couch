@@ -34,3 +34,5 @@ export 'src/use_dart_couch.dart';
 export 'src/value_notifier.dart';
 export 'src/view_diff.dart';
 export 'src/platform/io_shim.dart' show Directory;
+export 'src/doc_store.dart'
+    show DocStore, DocDb, CouchDocDb, SaveDocWriter, LiveDocHandle, updateDoc;

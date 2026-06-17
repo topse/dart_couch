@@ -23,3 +23,5 @@ TODO: When a app instance tries to create a database that has a tombstone: that 
       has new uuids, other instances should be able to sync correctly.
 
 TODO: remove Future.delay???
+
+TODO: add example for SaveDocWriter, LiveDocHandle in README
