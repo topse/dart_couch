@@ -1,0 +1,34 @@
+-ifdef(comment).
+  This code is originally taken from CouchDb and has additional log output.
+  It can be used to get logs from term_to_binary to reimplement it in other languages,
+  as done here in dart to be able to calculate revs.
+-endif.
+
+new_revid(#doc{body = Body, revs = {OldStart, OldRevs}, atts = Atts, deleted = Deleted}) ->
+    DigestedAtts = lists:foldl(
+        fun(Att, Acc) ->
+            [N, T, M] = couch_att:fetch([name, type, md5], Att),
+            case M == <<>> of
+                true -> Acc;
+                false -> [{N, T, M} | Acc]
+            end
+        end,
+        [],
+        Atts
+    ),
+    case DigestedAtts of
+        Atts2 when length(Atts) =/= length(Atts2) ->
+            % We must have old style non-md5 attachments
+            integer_to_binary(couch_util:rand32());
+        Atts2 ->
+            OldRev =
+                case OldRevs of
+                    [] -> 0;
+                    [OldRev0 | _] -> OldRev0
+                end,
+            TermToSerialize = [Deleted, OldStart, OldRev, Body, Atts2],
+            io:format("~n~n~n~n[DEBUG] term_to_binary input: ~p~n", [TermToSerialize]),
+            Serialized = term_to_binary(TermToSerialize, [{minor_version, 1}]),
+            io:format("[DEBUG] term_to_binary output: ~p~n~n~n~n", [Serialized]),
+            couch_hash:md5_hash(Serialized)
+    end.

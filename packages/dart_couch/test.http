@@ -1,0 +1,31 @@
+POST http://localhost:5984/_session
+Accept: application/json
+Content-Length: 37
+Content-Type: application/json
+Host: localhost:5984
+
+{
+    "name": "admin",
+    "password": "admin"
+}
+###
+GET http://localhost:5984/testdb1/_all_docs?include_docs=true HTTP/1.1
+AuthSession: YWRtaW46NjhDNTQzREQ6QQfzhdz_edtjltRuR44vJgmVeVUtwuwMgePDJgXMCMk
+###
+GET http://localhost:5984/testdb1/testdoc1?revs=true&revs_info=true&open_revs=all HTTP/1.1
+AuthSession: YWRtaW46NjhDNTQzREQ6QQfzhdz_edtjltRuR44vJgmVeVUtwuwMgePDJgXMCMk
+###
+GET http://localhost:5984/testdb1/testdoc?revs=true&revs_info=true HTTP/1.1
+AuthSession: YWRtaW46NjhDNTQzREQ6QQfzhdz_edtjltRuR44vJgmVeVUtwuwMgePDJgXMCMk
+###
+GET http://localhost:5984/testdb1/testdoc1 HTTP/1.1
+AuthSession: YWRtaW46NjhDNTQzREQ6QQfzhdz_edtjltRuR44vJgmVeVUtwuwMgePDJgXMCMk
+###
+GET http://localhost:5984/_all_dbs HTTP/1.1
+AuthSession: YWRtaW46NjhDNTE3MDY6hYbaiy86ZGd8YAXmTn7NcizI3EX0HWUs    s83IThk4mMjEA
+###
+GET http://localhost:5984/testdb1 HTTP/1.1
+AuthSession: YWRtaW46NjhDNTQzREQ6QQfzhdz_edtjltRuR44vJgmVeVUtwuwMgePDJgXMCMk
+###
+HEAD http://localhost:5984/testdb1 HTTP/1.1
+AuthSession: YWRtaW46NjhDNTQzREQ6QQfzhdz_edtjltRuR44vJgmVeVUtwuwMgePDJgXMCMk

@@ -1,0 +1,25 @@
+{
+    "_id": "_design/test_ddoc",
+    "_rev": "1-5812eb4508e8999f7f4858220416548e",
+    "language": "query",
+    "views": {
+        "name_index": {
+            "map": {
+                "fields": {
+                    "name": "asc"
+                },
+                "partial_filter_selector": {}
+            },
+            "reduce": "_count",
+            "options": {
+                "def": {
+                    "fields": [
+                        {
+                            "name": "asc"
+                        }
+                    ]
+                }
+            }
+        }
+    }
+}
