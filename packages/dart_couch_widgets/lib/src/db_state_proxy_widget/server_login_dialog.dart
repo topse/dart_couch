@@ -1,5 +1,5 @@
 import 'package:dart_couch/dart_couch.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// A dialog widget that prompts the user for a server URL, username and password.
 class ServerLoginDialog extends StatefulWidget {

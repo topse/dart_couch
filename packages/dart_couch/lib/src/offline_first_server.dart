@@ -1202,6 +1202,8 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
   ///   - Document processing
   /// - Migration change listeners (part of replication)
   ///
+  /// While paused, [retryNow] is a no-op.
+  ///
   /// **Result:** Zero background CPU/network activity = maximum battery savings
   Future<void> pause() async {
     await _lifecycleMutex.protect(() async {
@@ -1276,9 +1278,14 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
   ///    - Call _startContinuousReplication() to restart bidirectional sync
   ///    - Create new replication controllers with fresh timers/streams
   ///
+  /// 8. If that first attempt did not reach normalOnline (e.g. the session
+  ///    expired during standby or the network is not up yet), one health check
+  ///    runs immediately (outside the lifecycle mutex) instead of waiting for
+  ///    the first periodic tick. The periodic timer remains the safety net.
+  ///
   /// **Result:** Full activity restored, all data synced, replications running
   Future<void> resume() async {
-    await _lifecycleMutex.protect(() async {
+    final needsImmediateRecheck = await _lifecycleMutex.protect<bool>(() async {
       _log.info(
         'OfflineFirstServer.resume() START — state=${state.value}, '
         'connectionState=${httpServer.connectionState.value}, _isPaused=$_isPaused',
@@ -1286,13 +1293,13 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
 
       if (!_isPaused) {
         _log.fine('Not paused, skipping');
-        return;
+        return false;
       }
 
       // Only resume if we were in a normal state (not uninitialized or error)
       if (state.value != .normalOnline && state.value != .normalOffline) {
         _log.warning('Cannot resume from state ${state.value}');
-        return;
+        return false;
       }
 
       // Clear paused flag BEFORE running recovery work
@@ -1369,7 +1376,46 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
       _log.info(
         'OfflineFirstServer.resume() COMPLETE - all activity resumed via recovery callbacks',
       );
+      return state.value != OfflineFirstServerState.normalOnline ||
+          isNetworkDegraded;
     });
+
+    // The first recovery attempt often fails right after wakeup (session cookie
+    // expired during standby, network not up yet). Re-check immediately instead
+    // of waiting for the first periodic tick. Must run OUTSIDE the mutex: the
+    // health check calls onBackOnline(), which takes it.
+    if (needsImmediateRecheck) {
+      _log.fine('resume(): not fully online yet, running health check now');
+      await checkHealthNow();
+    }
+  }
+
+  /// One-shot shortcut: "a retry would make sense now".
+  ///
+  /// Call this when the app notices a good moment to reconnect, e.g. after a
+  /// connectivity-change event. It
+  /// 1. runs one health check immediately (re-login, back-online work), which
+  ///    restarts the periodic health timer so it never collides with it, and
+  /// 2. ends the backoff wait of every replication that is waiting to retry
+  ///    after a network failure.
+  ///
+  /// It does NOT replace the periodic health timer or the replication backoff;
+  /// those remain the safety net for all other cases (network loss, unexpected
+  /// errors). Safe to call at any time and as often as you like: it is a cheap
+  /// no-op when paused, disposing, not logged in, or when everything is healthy
+  /// (a healthy running replication is never stopped or restarted).
+  Future<void> retryNow() async {
+    if (_isPaused || _isDisposing) return;
+    if (state.value != .normalOnline && state.value != .normalOffline) return;
+
+    // Not under _lifecycleMutex: the health check may call onBackOnline(),
+    // which takes it.
+    await checkHealthNow();
+
+    if (_isPaused || _isDisposing) return;
+    for (final db in _dbCache.values.toList()) {
+      db.replicationController.retryNow();
+    }
   }
 
   @override
@@ -1859,6 +1905,18 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
     // Invalidate checkpoints before resolving conflict to force fresh sync
     await _invalidateCheckpoints(dbName);
 
+    // The local replica no longer corresponds to (a complete copy of) the
+    // remote incarnation: reset the persisted "initial sync completed" flag
+    // (and the notifier of an open OfflineFirstDb) BEFORE resolving. If this
+    // throws, the conflict is not resolved now; the marker mismatch persists
+    // and is handled again on the next sync cycle.
+    final cachedDb = _dbCache[dbName];
+    if (cachedDb != null) {
+      await cachedDb.invalidateInitialSync();
+    } else if (localDb != null) {
+      await OfflineFirstDb.writeInitialSyncFlag(localDb, false);
+    }
+
     switch (existingDatabaseSyncingStrategy) {
       case ExistingDatabasesSyncStrategie.serverAlwaysWins:
         _log.info('Conflict resolution: serverAlwaysWins - recreating locally');
@@ -1896,6 +1954,15 @@ class OfflineFirstServer extends DartCouchServer with HealthMonitoring {
         await _tryWriteMarker(localDb, remoteMarker.databaseUuid, 'remote');
         _log.info('Merge complete - local marker updated to remote identity');
         break;
+    }
+
+    // An open OfflineFirstDb that survived the resolution (localAlwaysWins /
+    // merge) still runs a controller started against the old incarnation with
+    // in-memory sequences. Restart it so a fresh run (checkpoints invalidated
+    // above) performs the full initial phase and can set the flag again.
+    final survivingDb = _dbCache[dbName];
+    if (survivingDb != null) {
+      await survivingDb.restartReplication();
     }
   }
 

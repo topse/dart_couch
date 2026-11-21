@@ -1,3 +1,12 @@
+## 1.0.18
+* add `OfflineFirstDb.initialSyncCompleted`: persisted flag "initial sync completed"
+* add optional `onInitialSyncComplete` callback to `syncTo`
+* bugfix: `resume()` reported `inSync` during the initial sync
+* bugfix: concurrent replication restarts could leave an unobserved replication running
+* restart replication after a detected database recreation
+* add `OfflineFirstServer.retryNow()`: one-shot shortcut to retry connecting/replicating immediately (e.g. on connectivity change)
+* bugfix: `resume()` now recovers an expired session / failed first attempt immediately instead of after the next health tick
+
 ## 1.0.16
 * cleanup work
 * update quickjs

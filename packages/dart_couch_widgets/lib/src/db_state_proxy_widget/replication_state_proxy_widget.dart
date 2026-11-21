@@ -1,14 +1,71 @@
 import 'dart:async';
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:dart_couch/dart_couch.dart';
 import 'package:logging/logging.dart';
 import 'package:wakelock_plus/wakelock_plus.dart';
 
 final Logger _log = Logger('dart_couch-widgets-replication_state_proxy');
 
-/// A widget that shows a progress screen while databases are performing initial synchronization.
-/// Once all databases have completed their initial sync, it shows the child widget.
+/// Decides whether the gate opens: only when every watched database reports
+/// `initialSyncCompleted == true`. The replication state is deliberately not
+/// part of the decision (offline / paused / terminated must not let a partially
+/// replicated database through).
+@visibleForTesting
+bool isInitialSyncGateOpen(Iterable<bool> initialSyncCompletedFlags) =>
+    initialSyncCompletedFlags.every((completed) => completed);
+
+/// State-dependent hint for a database whose initial sync is not complete.
+/// Returns null for states that are covered by the regular progress text
+/// (initial sync in progress / complete, in sync).
+@visibleForTesting
+String? replicationStateHint(ReplicationProgress progress) {
+  switch (progress.state) {
+    case ReplicationState.waitingForNetwork:
+      // The raw retry message is technical and kept out of the UI.
+      return 'Waiting for network…';
+    case ReplicationState.paused:
+    case ReplicationState.terminated:
+      return 'Paused';
+    case ReplicationState.initializing:
+      return 'Initializing…';
+    case ReplicationState.error:
+      return 'Error: ${progress.message ?? 'Unknown error'}';
+    case ReplicationState.initialSyncInProgress:
+    case ReplicationState.initialSyncComplete:
+    case ReplicationState.inSync:
+      return null;
+  }
+}
+
+/// Overall hint across all databases: errors take precedence, otherwise the
+/// first database that has a hint.
+@visibleForTesting
+String? overallReplicationHint(Iterable<ReplicationProgress> progresses) {
+  String? first;
+  for (final progress in progresses) {
+    final hint = replicationStateHint(progress);
+    if (hint == null) continue;
+    if (progress.state == ReplicationState.error) return hint;
+    first ??= hint;
+  }
+  return first;
+}
+
+/// A widget that shows a progress screen until the initial synchronization of
+/// all watched databases has completed. Then it shows the child widget.
+///
+/// The decision is based solely on `OfflineFirstDb.initialSyncCompleted`
+/// (persisted per installation), not on the current replication state:
+/// - After a completed initial sync the child opens immediately, also when
+///   offline, paused or terminated.
+/// - An interrupted or never-finished initial sync keeps the progress screen,
+///   together with a hint for the current state (waiting for network, paused,
+///   initializing, error).
+///
+/// Once the child is shown it stays shown while this widget is mounted. If the
+/// flag is reset later (remote database recreated), the gate does not close
+/// again; that takes effect on the next app start.
 ///
 /// The widget can wait for:
 /// - Specific databases by name (via [databaseNames] parameter)
@@ -78,7 +135,8 @@ class ReplicationStateProxyWidget extends StatefulWidget {
 class _ReplicationStateProxyWidgetState
     extends State<ReplicationStateProxyWidget> {
   final List<OfflineFirstDb> _listeningDatabases = [];
-  final Map<String, VoidCallback> _listeners = {};
+  final Map<String, VoidCallback> _progressListeners = {};
+  final Map<String, VoidCallback> _flagListeners = {};
   final Map<String, ReplicationProgress> _replicationProgress = {};
   bool _allDatabasesSynced = false;
   bool _isLoadingDatabases = true;
@@ -180,11 +238,13 @@ class _ReplicationStateProxyWidgetState
       return;
     }
 
-    // Check if all databases are already synced
-    _allDatabasesSynced = databases.every((db) {
-      final progress = db.replicationController.progress.value;
-      return progress.state != ReplicationState.initialSyncInProgress;
-    });
+    // Check if all databases already completed their initial sync
+    for (final db in databases) {
+      _replicationProgress[db.dbname] = db.replicationController.progress.value;
+    }
+    _allDatabasesSynced = isInitialSyncGateOpen(
+      databases.map((db) => db.initialSyncCompleted.value),
+    );
 
     if (_allDatabasesSynced) {
       _log.info('All databases already synced, showing child immediately');
@@ -192,14 +252,9 @@ class _ReplicationStateProxyWidgetState
       return;
     }
 
-    // Listen to replication progress for each database
     for (final db in databases) {
-      // Get initial progress value
-      final initialProgress = db.replicationController.progress.value;
-      _replicationProgress[db.dbname] = initialProgress;
-
-      // Add listener for changes
-      void listener() {
+      // Progress listener: only feeds the progress display
+      void progressListener() {
         final progress = db.replicationController.progress.value;
 
         if (progress.state != lastState) {
@@ -207,20 +262,22 @@ class _ReplicationStateProxyWidgetState
           lastState = progress.state;
         }
 
-        // Once all databases have completed initial sync, the gate is latched.
-        // Subsequent replication restarts (e.g. after pause/resume) must not
-        // flip the widget back to showing the progress screen.
-        if (_allDatabasesSynced) return;
-
+        if (_allDatabasesSynced || !mounted) return;
         setState(() {
           _replicationProgress[db.dbname] = progress;
+        });
+      }
 
-          // Check if all databases have completed initial sync
-          _allDatabasesSynced = databases.every((db) {
-            final currentProgress = _replicationProgress[db.dbname];
-            return currentProgress?.state !=
-                ReplicationState.initialSyncInProgress;
-          });
+      // Flag listener: the only thing that opens the gate.
+      // Once all flags are true the gate is latched. A later reset of a flag
+      // (remote DB recreated) does not close it again while mounted; it
+      // applies on the next app start. This avoids tearing down the running app.
+      void flagListener() {
+        if (_allDatabasesSynced || !mounted) return;
+        setState(() {
+          _allDatabasesSynced = isInitialSyncGateOpen(
+            databases.map((d) => d.initialSyncCompleted.value),
+          );
 
           // No further listener updates needed once synced
           if (_allDatabasesSynced) {
@@ -230,8 +287,10 @@ class _ReplicationStateProxyWidgetState
         });
       }
 
-      db.replicationController.progress.addListener(listener);
-      _listeners[db.dbname] = listener;
+      db.replicationController.progress.addListener(progressListener);
+      db.initialSyncCompleted.addListener(flagListener);
+      _progressListeners[db.dbname] = progressListener;
+      _flagListeners[db.dbname] = flagListener;
 
       _listeningDatabases.add(db);
     }
@@ -239,12 +298,17 @@ class _ReplicationStateProxyWidgetState
 
   void _cleanupSubscriptions() {
     for (final db in _listeningDatabases) {
-      final listener = _listeners[db.dbname];
-      if (listener != null) {
-        db.replicationController.progress.removeListener(listener);
+      final progressListener = _progressListeners[db.dbname];
+      if (progressListener != null) {
+        db.replicationController.progress.removeListener(progressListener);
+      }
+      final flagListener = _flagListeners[db.dbname];
+      if (flagListener != null) {
+        db.initialSyncCompleted.removeListener(flagListener);
       }
     }
-    _listeners.clear();
+    _progressListeners.clear();
+    _flagListeners.clear();
     _listeningDatabases.clear();
   }
 
@@ -324,6 +388,11 @@ class _ReplicationStateProxyWidgetState
       writeProgress = downloadProgress;
     }
 
+    final overallHint = overallReplicationHint(_replicationProgress.values);
+    final hasError = _replicationProgress.values.any(
+      (p) => p.state == ReplicationState.error,
+    );
+
     // Ensure proper theme inheritance with Scaffold for correct background
     return Scaffold(
       backgroundColor: Theme.of(context).colorScheme.surface,
@@ -348,6 +417,18 @@ class _ReplicationStateProxyWidgetState
               ),
             ),
             const SizedBox(height: 10),
+            if (overallHint != null) ...[
+              Text(
+                overallHint,
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                  color: hasError
+                      ? Theme.of(context).colorScheme.error
+                      : Theme.of(context).colorScheme.onSurfaceVariant,
+                ),
+              ),
+              const SizedBox(height: 10),
+            ],
             if (totalDocs > 0 || hasByteInfo) ...[
               Text(
                 _getOverallStatusText(
@@ -478,6 +559,8 @@ class _ReplicationStateProxyWidgetState
   }
 
   String _getProgressText(ReplicationProgress progress) {
+    final hint = replicationStateHint(progress);
+    if (hint != null) return hint;
     switch (progress.state) {
       case ReplicationState.initializing:
         return 'Initializing...';

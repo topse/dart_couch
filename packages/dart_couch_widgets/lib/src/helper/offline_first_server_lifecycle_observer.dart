@@ -2,7 +2,7 @@
 
 import 'dart:async';
 import 'package:dart_couch/dart_couch.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:logging/logging.dart';
 
 final Logger _log = Logger('dart_couch-wigets-lifecycle_observer');
@@ -24,6 +24,12 @@ final Logger _log = Logger('dart_couch-wigets-lifecycle_observer');
 /// `resumed` is the only state that definitively means "app is in the foreground".
 /// All other states (`hidden`, `inactive`, `detached`) are transient and must be
 /// ignored.
+///
+/// `resume()` retries immediately if the first recovery attempt does not get
+/// back online (e.g. expired session or network not up yet after standby).
+/// For other triggers (e.g. connectivity-change events) apps can call
+/// `server.retryNow()`. Desktop platforms never emit `paused`, so they are
+/// unaffected.
 class OfflineFirstServerLifecycleObserver with WidgetsBindingObserver {
   final OfflineFirstServer server;
 

@@ -10,6 +10,10 @@ Especially it shall not contain:
 - History
 - Implementation details (use comments in source code for that)
 
+## Changelog
+
+Entries in `CHANGELOG.md` are short headlines, one line per change (e.g. `* bugfix: resume() reported inSync during initial sync`). Details belong in code comments, the README or this file, not in the changelog. New entries go under `## Unreleased` at the top.
+
 ## Project Overview
 
 In subfolder example we find an example App using this library. It is used for first line of user tests but one a single application using this general lib.

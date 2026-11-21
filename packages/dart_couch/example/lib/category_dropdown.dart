@@ -1,7 +1,7 @@
 // All imports must be at the top
 
 import 'package:dart_couch/dart_couch.dart';
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:watch_it/watch_it.dart';
 
 import 'current_category_provider.dart';

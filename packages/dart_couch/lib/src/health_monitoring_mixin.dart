@@ -43,7 +43,7 @@ mixin HealthMonitoring {
 
   Timer? _healthTimer;
   Duration _healthInterval = const Duration(seconds: 5);
-  bool _healthCheckInProgress = false;
+  Future<void>? _healthCheckInFlight;
 
   /// Callbacks to invoke when coming back online
   final List<Future<void> Function()> _recoveryCallbacks = [];
@@ -80,95 +80,137 @@ mixin HealthMonitoring {
     if (_healthTimer != null) return; // already running
     _healthInterval = interval ?? _healthInterval;
     _healthLog.fine('Starting health monitoring every $_healthInterval');
-    _healthTimer = Timer.periodic(_healthInterval, (_) async {
-      // maybe everything is fine already
-      // network error could have been occured
-      //    -> login may be required, given credentials have been correct in the past
-      //        (however, they could be invalid now)
-      if (_healthCheckInProgress) return; // avoid overlapping checks
-      _healthCheckInProgress = true;
-      try {
-        final isUp = await isCouchDbUp();
-        if (isUp) {
-          if (authCookie == null) {
-            assert(username != null && password != null && uri != null);
-            // Session lost (no cookie) - try to login again
-            await _attemptRelogin();
-          } else {
-            // Have a cookie - validate it by checking the session
-            try {
-              final sessionResult = await session();
-              // Check if session is valid (name should not be null)
-              if (sessionResult.userCtx.name == null) {
-                // Session expired - need to re-login
-                _healthLog.fine(
-                  'Session expired (name is null), re-logging in',
-                );
-                await _attemptRelogin();
-              } else {
-                // Session is valid. One log line per tick (the previous code
-                // logged twice): the common "no action" case stays at FINE; the
-                // rarer recovery case logs at INFO.
-                if (state.value != .normalOnline || _networkDegraded) {
-                  // onBackOnline() already calls invokeRecoveryCallbacks() via
-                  // _performBackOnlineWork(). Do NOT call it a second time here
-                  // — a double call stops and restarts each replication controller
-                  // in rapid succession, which can leave replication in a broken
-                  // state on intermittent networks.
-                  _healthLog.info(
-                    'Session valid + recovery needed (state=${state.value}, _networkDegraded=$_networkDegraded) — calling onBackOnline()',
-                  );
-                  await onBackOnline();
-                  state.value = .normalOnline;
-                  _networkDegraded = false;
-                } else {
-                  _healthLog.fine(
-                    'Session valid, already normalOnline, no network degradation '
-                    '— no action needed (state=${state.value})',
-                  );
-                }
-              }
-            } on NetworkFailure catch (e) {
-              // getting session failed due to network error
-              _healthLog.fine('Session check network error: $e');
-              state.value =
-                  .normalOffline; // maybe normalTryingToConnect? Then our GUI may change to CircularProgressBar?
-            } on CouchDbException catch (e) {
-              // Session check failed (401 unauthorized or other error) - need to re-login
-              _healthLog.fine('Session check failed: $e, re-logging in');
-              await _attemptRelogin();
-            } catch (e) {
-              _healthLog.severe('Session check error: $e');
-              state.value =
-                  .normalOffline; // maybe normalTryingToConnect? Then our GUI may change to CircularProgressBar?
-            }
-          }
-        } else {
-          _healthLog.fine('CouchDB server is down');
-          // Mark network as degraded if we were online so we can trigger recovery
-          if (state.value == .normalOnline) {
-            _networkDegraded = true;
-          }
-          state.value = .normalOffline;
-        }
-      } on http.ClientException catch (e) {
-        _healthLog.fine('Health check network error: $e');
-        // Mark network as degraded if we were online so we can trigger recovery
-        if (state.value == .normalOnline) {
-          _networkDegraded = true;
-        }
-        state.value = .normalOffline;
-      } catch (e) {
-        _healthLog.fine('Health check error: $e');
-        // Mark network as degraded if we were online so we can trigger recovery
-        if (state.value == .normalOnline) {
-          _networkDegraded = true;
-        }
-        state.value = .normalOffline;
-      } finally {
-        _healthCheckInProgress = false;
+    _healthTimer = _createHealthTimer();
+  }
+
+  Timer _createHealthTimer() => Timer.periodic(_healthInterval, (_) {
+    // maybe everything is fine already
+    // network error could have been occured
+    //    -> login may be required, given credentials have been correct in the past
+    //        (however, they could be invalid now)
+    if (_healthCheckInFlight != null) return; // avoid overlapping checks
+    unawaited(_startHealthCheck());
+  });
+
+  /// Runs one health check right now instead of waiting for the next periodic
+  /// tick. One-shot shortcut for callers that know a retry makes sense (e.g.
+  /// after wakeup or a connectivity-change event).
+  ///
+  /// - No-op when monitoring is not active (paused, not logged in, disposed).
+  /// - If a check is already in flight, awaits that one (requests coalesce).
+  /// - Otherwise the periodic timer is cancelled, one check runs immediately
+  ///   and the timer is re-created, so the next periodic tick comes a full
+  ///   interval later and never overlaps with this check.
+  Future<void> checkHealthNow() async {
+    if (_healthTimer == null) return;
+    final inFlight = _healthCheckInFlight;
+    if (inFlight != null) {
+      await inFlight;
+      return;
+    }
+    _healthTimer!.cancel();
+    final timer = _healthTimer;
+    try {
+      await _startHealthCheck();
+    } finally {
+      // Only re-create the timer if monitoring was not stopped (or stopped and
+      // restarted) while the check was running.
+      if (identical(_healthTimer, timer)) {
+        _healthTimer = _createHealthTimer();
+      }
+    }
+  }
+
+  Future<void> _startHealthCheck() {
+    late final Future<void> check;
+    check = _runHealthCheck().whenComplete(() {
+      // stopHealthMonitoring() may have cleared the field already.
+      if (identical(_healthCheckInFlight, check)) {
+        _healthCheckInFlight = null;
       }
     });
+    _healthCheckInFlight = check;
+    return check;
+  }
+
+  Future<void> _runHealthCheck() async {
+    try {
+      final isUp = await isCouchDbUp();
+      if (isUp) {
+        if (authCookie == null) {
+          assert(username != null && password != null && uri != null);
+          // Session lost (no cookie) - try to login again
+          await _attemptRelogin();
+        } else {
+          // Have a cookie - validate it by checking the session
+          try {
+            final sessionResult = await session();
+            // Check if session is valid (name should not be null)
+            if (sessionResult.userCtx.name == null) {
+              // Session expired - need to re-login
+              _healthLog.fine('Session expired (name is null), re-logging in');
+              await _attemptRelogin();
+            } else {
+              // Session is valid. One log line per tick (the previous code
+              // logged twice): the common "no action" case stays at FINE; the
+              // rarer recovery case logs at INFO.
+              if (state.value != .normalOnline || _networkDegraded) {
+                // onBackOnline() already calls invokeRecoveryCallbacks() via
+                // _performBackOnlineWork(). Do NOT call it a second time here
+                // — a double call stops and restarts each replication controller
+                // in rapid succession, which can leave replication in a broken
+                // state on intermittent networks.
+                _healthLog.info(
+                  'Session valid + recovery needed (state=${state.value}, _networkDegraded=$_networkDegraded) — calling onBackOnline()',
+                );
+                await onBackOnline();
+                state.value = .normalOnline;
+                _networkDegraded = false;
+              } else {
+                _healthLog.fine(
+                  'Session valid, already normalOnline, no network degradation '
+                  '— no action needed (state=${state.value})',
+                );
+              }
+            }
+          } on NetworkFailure catch (e) {
+            // getting session failed due to network error
+            _healthLog.fine('Session check network error: $e');
+            state.value =
+                .normalOffline; // maybe normalTryingToConnect? Then our GUI may change to CircularProgressBar?
+          } on CouchDbException catch (e) {
+            // Session check failed (401 unauthorized or other error) - need to re-login
+            _healthLog.fine('Session check failed: $e, re-logging in');
+            await _attemptRelogin();
+          } catch (e) {
+            _healthLog.severe('Session check error: $e');
+            state.value =
+                .normalOffline; // maybe normalTryingToConnect? Then our GUI may change to CircularProgressBar?
+          }
+        }
+      } else {
+        _healthLog.fine('CouchDB server is down');
+        // Mark network as degraded if we were online so we can trigger recovery
+        if (state.value == .normalOnline) {
+          _networkDegraded = true;
+        }
+        state.value = .normalOffline;
+      }
+    } on http.ClientException catch (e) {
+      _healthLog.fine('Health check network error: $e');
+      // Mark network as degraded if we were online so we can trigger recovery
+      if (state.value == .normalOnline) {
+        _networkDegraded = true;
+      }
+      state.value = .normalOffline;
+    } catch (e) {
+      _healthLog.fine('Health check error: $e');
+      // Mark network as degraded if we were online so we can trigger recovery
+      if (state.value == .normalOnline) {
+        _networkDegraded = true;
+      }
+      state.value = .normalOffline;
+    }
   }
 
   /// Stop health monitoring (idempotent).
@@ -182,10 +224,7 @@ mixin HealthMonitoring {
       _healthLog.fine('No health timer to cancel');
     }
     _healthTimer = null;
-    _healthLog.fine(
-      'Setting _healthCheckInProgress to false (was: $_healthCheckInProgress)',
-    );
-    _healthCheckInProgress = false;
+    _healthCheckInFlight = null;
     _healthLog.fine('Stopping health monitoring - COMPLETE');
   }
 

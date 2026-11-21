@@ -3,7 +3,7 @@ import 'dart:async';
 import 'package:logging/logging.dart';
 import 'package:path/path.dart' as p;
 
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 import 'package:dart_couch/dart_couch.dart';
 import '../value_listenable_builder.dart';
 import 'server_login_dialog.dart';

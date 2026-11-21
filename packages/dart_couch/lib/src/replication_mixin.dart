@@ -150,16 +150,37 @@ abstract class ReplicationController {
   void resume();
   Future<void> stop();
 
+  /// One-shot hint that a retry makes sense now (e.g. after wakeup or a
+  /// connectivity change).
+  ///
+  /// If the controller is currently waiting for a backoff retry after a
+  /// network failure, the wait ends immediately and the retry runs now.
+  /// Otherwise this is a no-op; in particular a healthy running replication is
+  /// never stopped or restarted. The backoff progression is unchanged.
+  void retryNow();
+
   /// Subscribe to replication progress updates.
   DcValueListenable<ReplicationProgress> get progress;
 }
 
 mixin CouchReplicationMixin on DartCouchDb {
+  /// Starts a replication between this database and [target].
+  ///
+  /// [onInitialSyncComplete] (optional) is awaited exactly once per
+  /// controller, at the moment the initial one-shot catch-up phase has
+  /// genuinely finished (all one-shot directions done, checkpoint scheduled,
+  /// caught-up conflict sweep done) and *before* the controller announces
+  /// [ReplicationState.inSync] / [ReplicationState.initialSyncComplete]. It is
+  /// never invoked when the controller is stopped before reaching that point,
+  /// and never by [ReplicationController.resume]. Use it to durably record
+  /// "the local replica was complete at least once"; an exception thrown by
+  /// the callback is treated as a replication failure.
   ReplicationController syncTo(
     DartCouchDb target, {
     required DocumentConflictResolver? resolver,
     bool live = false,
     ReplicationDirection direction = ReplicationDirection.both,
+    Future<void> Function()? onInitialSyncComplete,
   }) {
     final controller = _CouchReplicationController(
       source: this,
@@ -167,6 +188,7 @@ mixin CouchReplicationMixin on DartCouchDb {
       live: live,
       direction: direction,
       conflictResolver: resolver,
+      onInitialSyncComplete: onInitialSyncComplete,
     );
 
     controller._start();
@@ -186,8 +208,20 @@ class _CouchReplicationController implements ReplicationController {
   /// leaves are transferred.
   final DocumentConflictResolver? conflictResolver;
 
+  /// See [CouchReplicationMixin.syncTo].
+  final Future<void> Function()? onInitialSyncComplete;
+
   bool _paused = false;
   bool _stopped = false;
+
+  /// Completed by [retryNow] / [stop] to end a running [_waitForRetry];
+  /// `null` while no backoff wait is in progress.
+  Completer<void>? _retryWakeup;
+
+  /// `true` once [_run] has completed the initial one-shot catch-up phase.
+  /// Used by [resume] to restore a state that matches what the controller is
+  /// really doing instead of claiming "in sync" mid-catch-up.
+  bool _initialPhaseDone = false;
   ReplicationState _state = ReplicationState.initializing;
   bool _targetReachable = true;
   String? _checkpointSeq;
@@ -283,6 +317,7 @@ class _CouchReplicationController implements ReplicationController {
     required this.live,
     required this.direction,
     required this.conflictResolver,
+    this.onInitialSyncComplete,
   }) {
     // Generate a unique session ID for this replication session
     _sessionId = _generateSessionId();
@@ -308,7 +343,11 @@ class _CouchReplicationController implements ReplicationController {
     );
     while (!_stopped) {
       try {
-        _state = ReplicationState.initialSyncInProgress;
+        // A retry of the initial phase while paused keeps reporting `paused`;
+        // resume() restores initialSyncInProgress.
+        _state = _paused
+            ? ReplicationState.paused
+            : ReplicationState.initialSyncInProgress;
         _targetReachable = true;
         _startTime = DateTime.now().toUtc().toIso8601String();
         _repLog.fine('Replication state: syncing');
@@ -408,9 +447,21 @@ class _CouchReplicationController implements ReplicationController {
           await _resolveCaughtUpConflicts();
         }
 
+        // The initial phase is genuinely complete. Let the owner persist that
+        // fact BEFORE the state change is announced, so a listener that sees
+        // inSync / initialSyncComplete can rely on it already being durable.
+        if (!_stopped && onInitialSyncComplete != null) {
+          await onInitialSyncComplete!();
+        }
+        if (!_stopped) {
+          _initialPhaseDone = true;
+        }
+
         if (live && !_stopped) {
           _startContinuousReplication();
-          _state = ReplicationState.inSync;
+          // If pause() was called during the final steps of the initial phase
+          // keep reporting `paused`; resume() will then report inSync.
+          _state = _paused ? ReplicationState.paused : ReplicationState.inSync;
           _repLog.info(
             'Transitioning to continuous replication. '
             'Push from sourceSeq=$_sourceSeq, Pull from targetSeq=$_targetSeq',
@@ -422,7 +473,9 @@ class _CouchReplicationController implements ReplicationController {
           _notify();
         } else if (!_stopped) {
           // one-shot replication finished successfully
-          _state = ReplicationState.initialSyncComplete;
+          _state = _paused
+              ? ReplicationState.paused
+              : ReplicationState.initialSyncComplete;
           _repLog.info(
             'Replication completed successfully: ${source.dbname} -> ${target.dbname}',
           );
@@ -1624,21 +1677,36 @@ class _CouchReplicationController implements ReplicationController {
 
   Future<void> _waitForRetry() async {
     final delay = _currentRetryDelay;
-    var elapsed = Duration.zero;
-    const tick = Duration(milliseconds: 250);
-    while (!_stopped && elapsed < delay) {
-      final remaining = delay - elapsed;
-      if (remaining <= Duration.zero) break;
-      final step = remaining < tick ? remaining : tick;
-      await Future.delayed(step);
-      elapsed += step;
-    }
+    final wakeup = Completer<void>();
+    _retryWakeup = wakeup;
+    // stop() may have run before the wait started.
+    if (_stopped) wakeup.complete();
+    final timer = Timer(delay, () {
+      if (!wakeup.isCompleted) wakeup.complete();
+    });
+    await wakeup.future;
+    timer.cancel();
+    if (identical(_retryWakeup, wakeup)) _retryWakeup = null;
 
     final nextMillis = min(
       _currentRetryDelay.inMilliseconds * 2,
       _maxRetryDelay.inMilliseconds,
     );
     _currentRetryDelay = Duration(milliseconds: nextMillis);
+  }
+
+  void _wakeRetryWait() {
+    final wakeup = _retryWakeup;
+    if (wakeup != null && !wakeup.isCompleted) wakeup.complete();
+  }
+
+  @override
+  void retryNow() {
+    if (_stopped) return;
+    _repLog.fine(
+      'retryNow(): ${_retryWakeup == null ? 'not waiting for retry, no-op' : 'ending backoff wait'}',
+    );
+    _wakeRetryWait();
   }
 
   void _resetRetryDelay() {
@@ -1691,19 +1759,39 @@ class _CouchReplicationController implements ReplicationController {
 
   @override
   void pause() {
+    if (_stopped) return;
     _repLog.fine('Pausing replication: ${source.dbname} -> ${target.dbname}');
     _paused = true;
     _state = ReplicationState.paused;
     _notify();
   }
 
+  /// Resumes a paused replication and restores the state that matches what
+  /// [_run] is actually doing:
+  /// - initial catch-up phase not finished yet → `initialSyncInProgress`
+  ///   (or `waitingForNetwork` while the last attempt failed and a retry is
+  ///   pending). It never reports `inSync` / `initialSyncComplete` before the
+  ///   initial phase really completed.
+  /// - initial phase done, one-shot → `initialSyncComplete`
+  /// - initial phase done, live → `inSync` (or `waitingForNetwork` while the
+  ///   target is unreachable; [_markReachable] switches back to `inSync`).
+  /// A stopped controller stays `terminated`.
   @override
   void resume() {
+    if (_stopped) return;
     _repLog.fine('Resuming replication: ${source.dbname} -> ${target.dbname}');
     _paused = false;
-    _state = live
-        ? ReplicationState.inSync
-        : ReplicationState.initialSyncComplete;
+    if (!_initialPhaseDone) {
+      _state = _targetReachable
+          ? ReplicationState.initialSyncInProgress
+          : ReplicationState.waitingForNetwork;
+    } else if (!live) {
+      _state = ReplicationState.initialSyncComplete;
+    } else {
+      _state = _targetReachable
+          ? ReplicationState.inSync
+          : ReplicationState.waitingForNetwork;
+    }
     _notify();
   }
 
@@ -1729,6 +1817,7 @@ class _CouchReplicationController implements ReplicationController {
   Future<void> stop() async {
     _repLog.fine('Stopping replication: ${source.dbname} -> ${target.dbname}');
     _stopped = true;
+    _wakeRetryWait();
 
     final pushCancel = _livePushSub?.cancel();
     final pullCancel = _livePullSub?.cancel();

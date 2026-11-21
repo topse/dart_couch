@@ -40,7 +40,7 @@ void main(List<String> args) async {
         ? const <String>['m']
         : const <String>[];
     final cDefines = <String, String?>{
-      'CONFIG_VERSION': '"0.15.1"',
+      'CONFIG_VERSION': '"0.18.0"',
       '_GNU_SOURCE': null,
       'CONFIG_BIGNUM': null,
       'QUICKJS_WRAPPER_BUILD': null,

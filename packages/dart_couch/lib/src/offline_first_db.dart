@@ -2,6 +2,8 @@ import 'dart:async';
 import 'dart:typed_data';
 
 import 'package:dart_mappable/dart_mappable.dart';
+import 'package:meta/meta.dart';
+import 'package:mutex/mutex.dart';
 import 'value_notifier.dart';
 import 'package:logging/logging.dart';
 
@@ -53,11 +55,17 @@ class LocalMigrationDocument extends CouchDocumentBase
 }
 
 class OfflineFirstDb extends DartCouchDb {
+  /// `_local` document (in the LOCAL database) persisting whether the initial
+  /// replication has completed at least once for this local database.
+  /// `_local` documents never replicate, so the fact stays per installation.
+  static const String initialSyncStateDocId = '_local/initial_sync_state';
+
   final HttpDartCouchServer serverDb;
   final LocalDartCouchDb localDb;
   final void Function() notifyNetworkDegraded;
   final void Function(Future<void> Function()) registerRecoveryCallback;
   final void Function(Future<void> Function()) unregisterRecoveryCallback;
+
   /// Conflict resolver, forwarded to `syncTo` (Decision C). Required —
   /// explicit `null` preserves conflicts (CouchDB-faithful).
   final DocumentConflictResolver? conflictResolver;
@@ -71,6 +79,42 @@ class OfflineFirstDb extends DartCouchDb {
 
   DatabaseMigration? migration;
   final DcValueNotifier<MigrationStatus> migrationState;
+
+  final DcValueNotifier<bool> _initialSyncCompleted = DcValueNotifier(false);
+
+  /// Serializes reads/writes of [initialSyncStateDocId] + the notifier.
+  final Mutex _initialSyncFlagMutex = Mutex();
+
+  /// Incremented whenever the local content is invalidated
+  /// ([invalidateInitialSync]). Each replication controller captures the value
+  /// at start; a completion signal carrying an older value is ignored, so a
+  /// replication that started before a recreation was detected can never mark
+  /// the new incarnation as complete. (A stopped controller never signals
+  /// completion at all — guaranteed by `syncTo`.)
+  int _contentGeneration = 0;
+
+  /// Whether the initial replication of this database has completed at least
+  /// once on this installation (persisted in the local database).
+  ///
+  /// - `true`: the local replica was fully caught up with the server at least
+  ///   once. It stays `true` across app restarts, while offline, while the
+  ///   app is paused/backgrounded and during later network outages — the local
+  ///   data may then lag behind the server, but it is a complete snapshot.
+  /// - `false`: the initial replication has never finished (fresh install,
+  ///   or interrupted by network loss / app pause / stop), or the local
+  ///   content was invalidated because a database recreation was detected
+  ///   (marker UUID mismatch). It becomes `true` as soon as a replication run
+  ///   genuinely finishes its initial catch-up phase.
+  ///
+  /// The value is persisted *before* it changes to `true`, and before the
+  /// replication progress reports `inSync`; so when
+  /// [replicationController] reports `inSync` this is already `true`.
+  ///
+  /// **Validity:** loaded from the local database during [init], i.e. it is
+  /// already correct (no `false → true` flicker) on every instance returned by
+  /// `OfflineFirstServer.db()` / `OfflineFirstServer.createDatabase()`, also
+  /// when offline.
+  DcValueListenable<bool> get initialSyncCompleted => _initialSyncCompleted;
 
   OfflineFirstDb({
     required this.serverDb,
@@ -96,6 +140,10 @@ class OfflineFirstDb extends DartCouchDb {
   }
 
   Future<void> init() async {
+    // Load the persisted flag first so it is valid before the instance is
+    // handed out by the server and before replication can change it.
+    _initialSyncCompleted.value = await readInitialSyncFlag(localDb);
+
     registerRecoveryCallback(_myRecoveryCallback);
 
     if (migration != null) {
@@ -289,10 +337,12 @@ class OfflineFirstDb extends DartCouchDb {
 
         if (_isDisposed) return;
 
+        final generation = _contentGeneration;
         final controller = localDb.syncTo(
           db,
           live: true,
           resolver: conflictResolver,
+          onInitialSyncComplete: () => _onInitialSyncComplete(generation),
         );
         _log.fine('Starting sync controller for $dbname (local -> remote)');
         await _proxyController.setDelegate(controller);
@@ -357,6 +407,81 @@ class OfflineFirstDb extends DartCouchDb {
         rethrow;
       }
     }
+  }
+
+  /// Called by a replication controller started at content [generation]
+  /// when its initial catch-up phase genuinely finished (see `syncTo`).
+  /// Persists the flag, then announces it. Ignored for a controller started
+  /// before an [invalidateInitialSync].
+  Future<void> _onInitialSyncComplete(int generation) async {
+    await _initialSyncFlagMutex.protect(() async {
+      if (_isDisposed || generation != _contentGeneration) {
+        _log.fine(
+          '$dbname: ignoring initial-sync completion of stale replication '
+          '(generation $generation, current $_contentGeneration)',
+        );
+        return;
+      }
+      if (_initialSyncCompleted.value) return;
+      try {
+        await writeInitialSyncFlag(localDb, true);
+      } catch (e, st) {
+        // Not fatal for replication; the flag simply stays false and is set
+        // by the next replication run that completes its initial phase.
+        _log.severe('$dbname: failed to persist initial-sync flag: $e', e, st);
+        return;
+      }
+      _log.info('$dbname: initial sync completed (flag persisted)');
+      _initialSyncCompleted.value = true;
+    });
+  }
+
+  /// Marks the local content as no longer complete (persisted + notifier),
+  /// e.g. after a database recreation was detected. Any replication started
+  /// before this call can no longer set the flag; only a replication started
+  /// afterwards (see [restartReplication]) can.
+  ///
+  /// Library-internal; called by `OfflineFirstServer`.
+  @internal
+  Future<void> invalidateInitialSync() async {
+    _contentGeneration++;
+    await _initialSyncFlagMutex.protect(() async {
+      _initialSyncCompleted.value = false;
+      await writeInitialSyncFlag(localDb, false);
+    });
+    _log.info('$dbname: initial-sync flag reset');
+  }
+
+  /// Restarts the replication with a fresh controller (full initial phase,
+  /// using the persisted checkpoints). No-op when disposed or offline (the
+  /// recovery callback restarts it when the connection comes back).
+  ///
+  /// Library-internal; called by `OfflineFirstServer`.
+  @internal
+  Future<void> restartReplication() => _startContinuousReplication();
+
+  /// Reads the persisted initial-sync flag from [localDb].
+  ///
+  /// Library-internal.
+  @internal
+  static Future<bool> readInitialSyncFlag(DartCouchDb localDb) async {
+    final doc = await localDb.getRaw(initialSyncStateDocId);
+    return doc != null && doc['completed'] == true;
+  }
+
+  /// Persists the initial-sync flag in [localDb] (overwrites the `_local`
+  /// document; `_local` writes need no revision).
+  ///
+  /// Library-internal.
+  @internal
+  static Future<void> writeInitialSyncFlag(
+    DartCouchDb localDb,
+    bool completed,
+  ) async {
+    await localDb.putRaw({
+      '_id': initialSyncStateDocId,
+      'completed': completed,
+    });
   }
 
   @override
@@ -873,9 +998,10 @@ class _ProxyReplicationController implements ReplicationController {
   DcValueListenable<ReplicationProgress> get progress => _progressNotifier;
 
   Future<void> setDelegate(ReplicationController controller) async {
-    await _stopDelegate();
-    if (_delegate != null) {
-      _delegate!.progress.removeListener(_onDelegateProgress);
+    // Loop: a concurrent setDelegate() may have installed another delegate
+    // while we were awaiting the stop; never leave one running unobserved.
+    while (_delegate != null) {
+      await _stopDelegate();
     }
     _delegate = controller;
     _delegate!.progress.addListener(_onDelegateProgress);
@@ -931,6 +1057,9 @@ class _ProxyReplicationController implements ReplicationController {
 
   @override
   void resume() => _delegate?.resume();
+
+  @override
+  void retryNow() => _delegate?.retryNow();
 
   @override
   Future<void> stop() async {

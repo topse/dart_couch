@@ -149,6 +149,8 @@ The core library provides `pause()` and `resume()` on `OfflineFirstServer` to st
 
 For Flutter apps, the companion package [dart_couch_widgets](../dart_couch_widgets/) provides `OfflineFirstServerLifecycleObserver`, which automatically calls `pause()` and `resume()` based on the app lifecycle.
 
+`resume()` retries immediately if the first recovery attempt does not get back online (e.g. the session expired during standby). To trigger a retry from other events, such as a connectivity change, call `retryNow()`: it runs one health check right away and ends any replication backoff wait. It is a cheap no-op when paused or healthy and does not replace the periodic health check or the replication backoff.
+
 ## Conflict Resolution
 
 When a remote database is recreated (detected via UUID markers), DartCouchDB resolves the conflict based on your chosen strategy:
@@ -174,6 +176,7 @@ When a remote database is recreated (detected via UUID markers), DartCouchDB res
 | `deleteDatabase(name)` | Delete with coordinated tombstone protocol |
 | `pause()` | Stop all background activity |
 | `resume()` | Resume activity and sync missed changes |
+| `retryNow()` | One-shot "retry now" shortcut (no-op when paused or healthy) |
 | `state` | Stream of connection state changes |
 
 ### OfflineFirstDb
@@ -187,6 +190,10 @@ When a remote database is recreated (detected via UUID markers), DartCouchDB res
 | `useDoc(id)` | Reactive stream for a single document |
 | `useView(path, ...)` | Reactive stream for a view |
 | `useAllDocs(keys)` | Reactive stream for multiple documents |
+| `replicationController.progress` | Live replication state/progress |
+| `initialSyncCompleted` | `DcValueListenable<bool>`: `true` once the initial replication has completed at least once for this local database (persisted, valid offline right after `db()` returns; reset on database recreation) |
+
+Gate your UI on `initialSyncCompleted` rather than on the replication state: states like `waitingForNetwork`, `paused` or `terminated` cannot tell "offline with complete data" from "initial sync interrupted".
 
 ### CouchDocumentBase
 

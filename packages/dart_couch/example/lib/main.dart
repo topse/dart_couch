@@ -4,7 +4,7 @@ import 'dart:convert';
 import 'package:dart_couch/dart_couch.dart';
 import 'package:dart_couch_widgets/dart_couch_widgets.dart';
 import 'package:flutter/foundation.dart' show kIsWeb;
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 import 'package:path/path.dart' as p;
 

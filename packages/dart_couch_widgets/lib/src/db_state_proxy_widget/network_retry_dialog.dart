@@ -1,4 +1,4 @@
-import 'package:flutter/material.dart';
+import 'package:material_ui/material_ui.dart';
 
 /// A dialog widget that prompts the user to retry connection or change credentials
 /// after a network error.

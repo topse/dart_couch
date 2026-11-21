@@ -54,7 +54,13 @@ DbStateProxyWidget(
 
 ### ReplicationStateProxyWidget
 
-Gates your UI until initial replication completes for the specified databases. Shows sync progress (documents transferred, bytes, percentage) and enables a wakelock to prevent the device from sleeping during the initial sync.
+Gates your UI until the initial replication has completed for the specified databases. The decision is based solely on `OfflineFirstDb.initialSyncCompleted` (persisted per installation), not on the current replication state:
+
+- After a completed initial sync the child opens immediately, even when offline, paused or terminated.
+- An interrupted or never-finished initial sync keeps the progress screen, with a hint for the current state (waiting for network, paused, initializing, error).
+- Once the child is shown it stays shown while the widget is mounted. If the flag is reset later (remote database recreated), the gate applies on the next app start.
+
+While waiting it shows sync progress (documents transferred, bytes, percentage) and enables a wakelock to prevent the device from sleeping during the initial sync.
 
 ```dart
 ReplicationStateProxyWidget(

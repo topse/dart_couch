@@ -35,3 +35,10 @@ TODO (deferred from the conflict-handling effort, all low priority — the effor
         cm.pauseContainer()/resumeContainer()); explicit race test "initial replication races a
         fresh remote change, just-resolved conflict re-converges next run" (partially covered by
         the loser-extended test).
+
+TODO: Trigger a reconnect when Wi-Fi/network becomes available. After a wakeup the network is often
+      not up yet when resume() runs, so recovery still waits for the next periodic health tick
+      (default 5 s). Idea: listen to connectivity changes (e.g. package connectivity_plus) and call
+      OfflineFirstServer.retryNow() — either in the example app or optionally in
+      OfflineFirstServerLifecycleObserver (would add a dependency to dart_couch_widgets).
+      First verify on a device whether the immediate re-check in resume() is already sufficient.
