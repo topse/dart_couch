@@ -1,3 +1,6 @@
+## 1.0.24
+* update libs
+
 ## 1.0.18
 * add `OfflineFirstDb.initialSyncCompleted`: persisted flag "initial sync completed"
 * add optional `onInitialSyncComplete` callback to `syncTo`
