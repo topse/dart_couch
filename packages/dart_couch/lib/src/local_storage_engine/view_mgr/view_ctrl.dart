@@ -13,6 +13,14 @@ import '../database.dart';
 
 final log = Logger('dart_couch-view_ctrl');
 
+/// Batched winner-document loader: maps each requested docid to its current
+/// winning document, or `null` when missing or deleted.
+typedef DbGetManyFunction =
+    Future<Map<String, CouchDocumentBase?>> Function(
+      List<String> docids, {
+      bool attachments,
+    });
+
 class JavascriptException implements Exception {
   final String message;
   JavascriptException(this.message);
@@ -35,15 +43,64 @@ class ViewCtrl {
   })
   dbGetFunction;
 
+  /// Batched loader used for `include_docs`: returns the current winner of
+  /// every requested docid (`null` for missing/deleted) — per document the
+  /// same result as [dbGetFunction] without `rev`/`revs`/`revsInfo` — in a
+  /// bounded number of queries instead of ~2 per row.
+  final DbGetManyFunction dbGetManyFunction;
+
   /// Mutex to serialize view updates
   final Mutex _updateMutex = Mutex();
+
+  /// Rows per [dbGetManyFunction] call when resolving `include_docs`; bounds
+  /// the intermediate per-batch memory and matches the storage layer's
+  /// `IN (...)` chunk size.
+  static const int _includeDocsBatchSize = AppDatabase.batchReadChunkSize;
+
+  /// Documents per indexing page in [_updateViewEntries] (one page query +
+  /// at most one write batch per page). Keeps `IN (...)` lists below
+  /// SQLite's bound-variable limit and bounds memory for large databases.
+  static const int _indexPageSize = AppDatabase.batchReadChunkSize;
+
+  /// Documents processed without any entry change whose seq advance may stay
+  /// in memory before it is persisted anyway (see [_updateViewEntries]).
+  static const int _maxUnpersistedDocs = AppDatabase.batchReadChunkSize;
+
+  /// Documents processed since the view's updateSeq was last written.
+  int _unpersistedDocs = 0;
+
+  /// Database update seq read by [ViewMgr.getView] just before handing this
+  /// controller out; consumed by the next [_updateViewEntries] to skip its
+  /// own seq query. Always a value read before the update starts, so a lower
+  /// bound of what the update must cover.
+  int? _dbSeqHint;
 
   ViewCtrl({
     required this.dbid,
     required this.db,
     required this.view,
     required this.dbGetFunction,
+    required this.dbGetManyFunction,
   });
+
+  /// Records the database update seq [seq] just read by the caller (see
+  /// [_dbSeqHint]).
+  void noteDbUpdateSeq(int seq) {
+    final h = _dbSeqHint;
+    if (h == null || seq > h) _dbSeqHint = seq;
+  }
+
+  /// Replaces the view row (e.g. after ViewMgr re-validated it against its
+  /// design document). Call inside [runExclusive].
+  void adoptView(LocalView row) {
+    view = row;
+    _unpersistedDocs = 0;
+  }
+
+  /// Runs [action] mutually exclusive with this view's queries / index
+  /// updates.
+  Future<T> runExclusive<T>(Future<T> Function() action) =>
+      _updateMutex.protect(action);
 
   /// The view's JavaScript map function source.
   String get mapFunction => view.mapFunction;
@@ -142,7 +199,7 @@ class ViewCtrl {
       List<_ViewEntryIntermediate> filteredEntries;
 
       if (normalizedKeys != null) {
-        /// When using the 'keys' parameter (e.g., with _all_docs), we need to find
+        /// When using the 'keys' parameter, we need to find
         /// exact matches for each requested key. This is different from range queries
         /// where we filter entries within a range.
         ///
@@ -227,34 +284,55 @@ class ViewCtrl {
           ? iterableAfterSkip.take(limit)
           : iterableAfterSkip;
 
-      // Debug: Log what we're about to return
-      final rows = await Future.wait(
-        pagedEntries.map((e) async {
-          if (e.entry == null) {
-            // For missing documents when using keys parameter, we should return
-            // null for id and 'not_found' for error to match CouchDB behavior.
-            final result = ViewEntry(
-              id: null, // null for non-existent documents
-              key: _tryParseJson(e.key),
-              value: null,
-              error: "not_found",
-            );
-            return result;
-          }
-          final result = ViewEntry(
-            id: e.entry!.docid,
-            key: _tryParseJson(e.entry!.key),
-            value: _tryParseJson(e.entry!.value),
-            doc: includeDocs == false
-                ? null
-                : (await dbGetFunction(
-                    e.entry!.docid,
-                    attachments: attachments,
-                  )),
+      final paged = pagedEntries.toList(growable: false);
+
+      ViewEntry toRow(_ViewEntryIntermediate e, CouchDocumentBase? doc) {
+        if (e.entry == null) {
+          // For missing documents when using keys parameter, we should return
+          // null for id and 'not_found' for error to match CouchDB behavior.
+          return ViewEntry(
+            id: null, // null for non-existent documents
+            key: _tryParseJson(e.key),
+            value: null,
+            error: "not_found",
           );
-          return result;
-        }).toList(),
-      );
+        }
+        return ViewEntry(
+          id: e.entry!.docid,
+          key: _tryParseJson(e.entry!.key),
+          value: _tryParseJson(e.entry!.value),
+          doc: doc,
+        );
+      }
+
+      final List<ViewEntry> rows;
+      if (!includeDocs) {
+        rows = [for (final e in paged) toRow(e, null)];
+      } else {
+        // Resolve docs in batches: one batched load per chunk of rows instead
+        // of ~2 queries per row. Row order and duplicate rows (a doc emitting
+        // several rows, repeated `keys`) are preserved; each distinct docid
+        // is loaded once per chunk.
+        rows = <ViewEntry>[];
+        for (var i = 0; i < paged.length; i += _includeDocsBatchSize) {
+          final chunk = paged.sublist(
+            i,
+            i + _includeDocsBatchSize > paged.length
+                ? paged.length
+                : i + _includeDocsBatchSize,
+          );
+          final docids = <String>{
+            for (final e in chunk)
+              if (e.entry != null) e.entry!.docid,
+          }.toList(growable: false);
+          final docs = docids.isEmpty
+              ? const <String, CouchDocumentBase?>{}
+              : await dbGetManyFunction(docids, attachments: attachments);
+          for (final e in chunk) {
+            rows.add(toRow(e, e.entry == null ? null : docs[e.entry!.docid]));
+          }
+        }
+      }
 
       return ViewResult(totalRows: totalrows, offset: skip ?? 0, rows: rows);
     });
@@ -409,50 +487,146 @@ class ViewCtrl {
     return true;
   }
 
+  /// Brings the index up to date with the database.
+  ///
+  /// Walks the documents changed since [LocalView.updateSeq] in seq-ordered
+  /// pages of [_indexPageSize] and, per page,
+  ///  1. loads the page (bodies + "has live conflicts" + "has entries in this
+  ///     view" flags) in one query,
+  ///  2. loads `_conflicts` and the old entries only for the docs flagged,
+  ///  3. runs the map function and compares old vs new entries per doc,
+  ///  4. writes the deletes + inserts of the docs whose entries changed and
+  ///     the advanced updateSeq in ONE drift batch (one round trip, atomic).
+  ///
+  /// Per document the outcome is the same as re-indexing it from scratch:
+  /// `_local/` and `_design/` docs are skipped, a tombstone loses its
+  /// entries, a doc without blob or whose map errors keeps its old entries
+  /// (logged), otherwise its entries become exactly what the map emitted (in
+  /// emit order). Re-processing a doc is idempotent, which is what makes the
+  /// paging restartable and lets small no-op advances stay in memory (see
+  /// [_maxUnpersistedDocs]).
   Future<void> _updateViewEntries() async {
-    // 1. find the current updateSeq from the database
-    int curUpdateSeq = await db.getCurrentUpdateSeq(view.database);
+    // 1. find the current updateSeq from the database (ViewMgr.getView
+    //    usually just read it and left it as a hint)
+    final int? hint = _dbSeqHint;
+    _dbSeqHint = null;
+    final int curUpdateSeq =
+        hint ?? await db.getCurrentUpdateSeq(view.database);
 
-    log.info(
-      '_updateViewEntries: curUpdateSeq=$curUpdateSeq, view.updateSeq=${view.updateSeq}, viewId=${view.id}',
+    log.fine(
+      () =>
+          '_updateViewEntries: curUpdateSeq=$curUpdateSeq, view.updateSeq=${view.updateSeq}, viewId=${view.id}',
     );
 
     // check if a view update is needed
     if (curUpdateSeq == view.updateSeq) {
-      log.info('_updateViewEntries: View is up to date, skipping');
+      log.fine('_updateViewEntries: View is up to date, skipping');
       return;
     }
 
-    // 2. get all documents, that have a higher sequence number than the last views update sequence
-    List<LocalDocumentWithBlob> docs = await db.getDocuments(
-      dbid,
-      true,
-      seqNumber: view.updateSeq,
-    );
-
-    log.info('_updateViewEntries: Got ${docs.length} documents to process');
-
-    if (docs.isEmpty) return;
-
-    // CouchDB feeds the map function the winning revision PLUS a `_conflicts`
-    // member when the document is in conflict (REPLICATION_AND_CONFLICT_MODEL.md
-    // "View map functions"), so a view can locate conflicted docs via
-    // `if (doc._conflicts) emit(...)`. Fetch every conflicted doc's live
-    // (non-deleted) leaf revs once for this pass and inject `_conflicts` below.
-    // A doc's `seq` is bumped whenever its leaf set changes (see
-    // AppDatabase.updateDocumentSeq), so incremental re-indexing picks up a
-    // conflict appearing or being resolved. Non-conflicted docs (the common
-    // case) are fed their stored blob untouched — no extra cost.
-    final Map<int, List<String>> liveConflicts = await db.liveConflictRevsByDoc(
-      dbid,
-    );
-
-    // start the javascript engine
-    final jsEngine = JsEngine();
+    JsEngine? jsEngine;
+    JsEngine engine() => jsEngine ??= _createMapEngine();
+    var processed = 0;
+    var written = 0;
 
     try {
-      // 3. Setup the JavaScript environment with emit function
-      jsEngine.evaluate('''
+      var afterSeq = view.updateSeq;
+      while (true) {
+        // 2. next page of documents with a higher sequence number. No upper
+        //    bound: a doc rewritten during the walk moves to a higher seq and
+        //    is picked up by a later page (or the next update).
+        final page = await db.getViewIndexPage(
+          dbid,
+          view.id,
+          afterSeq,
+          limit: _indexPageSize,
+        );
+        final bool lastPage = page.length < _indexPageSize;
+
+        // Every doc with seq <= the page's last seq has been seen. After the
+        // last page every doc that existed when curUpdateSeq was read has
+        // been seen as well (a doc rewritten since then has a higher seq
+        // than curUpdateSeq), so the index is current up to curUpdateSeq.
+        var newSeq = page.isEmpty ? afterSeq : page.last.document.seq;
+        if (lastPage && curUpdateSeq > newSeq) newSeq = curUpdateSeq;
+
+        final writes = page.isEmpty
+            ? const _PageWrites.empty()
+            : await _indexPage(page, engine);
+        processed += page.length;
+        _unpersistedDocs += page.length;
+
+        if (newSeq != view.updateSeq || writes.hasWrites) {
+          // Persist when entries change (the seq rides along for free), on
+          // every non-final page of a long walk (restart point), and after
+          // [_maxUnpersistedDocs] no-op docs. A small no-op advance (a write
+          // the view does not emit for) stays in memory: losing it only
+          // means re-mapping those docs once, which is idempotent.
+          final persist =
+              writes.hasWrites ||
+              !lastPage ||
+              _unpersistedDocs >= _maxUnpersistedDocs;
+          if (persist) {
+            final viewId = view.id;
+            await db.batch((b) {
+              if (writes.deleteDocids.isNotEmpty) {
+                b.deleteWhere(
+                  db.localViewEntries,
+                  (t) =>
+                      t.fkview.equals(viewId) &
+                      t.docid.isIn(writes.deleteDocids),
+                );
+              }
+              if (writes.inserts.isNotEmpty) {
+                b.insertAll(db.localViewEntries, writes.inserts);
+              }
+              b.update(
+                db.localViews,
+                LocalViewsCompanion(updateSeq: Value(newSeq)),
+                where: (t) => t.id.equals(viewId),
+              );
+            });
+            _unpersistedDocs = 0;
+            written += writes.inserts.length;
+          }
+          // In-memory row; no reload query needed.
+          view = view.copyWith(updateSeq: newSeq);
+        }
+
+        if (lastPage) break;
+        afterSeq = newSeq;
+      }
+
+      log.fine(
+        () =>
+            '_updateViewEntries: processed $processed documents, wrote $written entries',
+      );
+
+      // Log how many entries were stored. Diagnostic only: the COUNT is an
+      // extra query, so it only runs when FINE logging is enabled.
+      if (log.isLoggable(Level.FINE)) {
+        final entryCount =
+            await (db.selectOnly(db.localViewEntries)
+                  ..addColumns([db.localViewEntries.id.count()])
+                  ..where(db.localViewEntries.fkview.equals(view.id)))
+                .getSingle();
+        log.fine(
+          'View now has ${entryCount.read(db.localViewEntries.id.count())} entries, updateSeq updated to ${view.updateSeq}',
+        );
+      }
+    } catch (e) {
+      log.severe('Error executing JavaScript map function: $e');
+      rethrow; // Re-throw the error to let the caller handle it
+    } finally {
+      jsEngine?.dispose();
+    }
+  }
+
+  /// A JS engine with `emit` and this view's map function installed.
+  JsEngine _createMapEngine() {
+    final jsEngine = JsEngine();
+    // Setup the JavaScript environment with emit function
+    jsEngine.evaluate('''
         var exception = null;
         var emitted = [];
         function emit(key, value) {
@@ -460,174 +634,165 @@ class ViewCtrl {
         }
       ''');
 
-      // Inject the map function into the runtime
-      jsEngine.evaluate('var mapFunction = ${view.mapFunction};');
+    // Inject the map function into the runtime
+    jsEngine.evaluate('var mapFunction = ${view.mapFunction};');
+    return jsEngine;
+  }
 
-      // 3b. Process each document with the map function
-      for (var doc in docs) {
-        // Skip _local documents - they are never replicated or indexed in views
-        if (doc.document.docid.startsWith('_local/')) continue;
+  /// Maps one page of changed documents and returns the entry writes it
+  /// needs (nothing for docs whose entries are unchanged).
+  Future<_PageWrites> _indexPage(
+    List<ViewIndexSourceDoc> page,
+    JsEngine Function() engine,
+  ) async {
+    final candidates = <ViewIndexSourceDoc>[
+      for (final doc in page)
+        // Skip _local documents - they are never replicated or indexed in
+        // views. Design documents are not fed to design-document views
+        // (CouchDB behaviour). `_all_docs`, which does list them, is not a
+        // ViewCtrl view: it is served from the documents table directly.
+        if (!doc.document.docid.startsWith('_local/') &&
+            !doc.document.docid.startsWith('_design/'))
+          doc,
+    ];
+    if (candidates.isEmpty) return const _PageWrites.empty();
 
-        // Special handling for design documents:
-        // - For _all_docs view: include design documents (CouchDB behavior)
-        // - For custom views: exclude design documents from results
-        // - BUT: we still need to process design documents internally for view management
-        //   to detect when view definitions change
-        if (doc.document.docid.startsWith('_design/')) {
-          // Only include design documents in _all_docs view results
-          // For custom views, skip them in the final results but still process them
-          // for view management purposes
-          if (view.viewPathShort != '_all_docs') {
-            continue;
-          }
-        }
+    bool mapped(ViewIndexSourceDoc d) =>
+        d.document.deleted != true && d.data != null;
 
-        // Handle deleted documents: remove old view entries and skip map function
-        if (doc.document.deleted == true) {
-          await _removeOldViewEntries(doc.document.docid);
-          continue;
-        }
+    // CouchDB feeds the map function the winning revision PLUS a `_conflicts`
+    // member when the document is in conflict (REPLICATION_AND_CONFLICT_MODEL.md
+    // "View map functions"), so a view can locate conflicted docs via
+    // `if (doc._conflicts) emit(...)`. Load the live (non-deleted) leaf revs
+    // of this page's conflicted docs (flagged by the page query) and inject
+    // `_conflicts` below. A doc's `seq` is bumped whenever its leaf set
+    // changes (see AppDatabase.updateDocumentSeq), so incremental re-indexing
+    // picks up a conflict appearing or being resolved. Non-conflicted docs
+    // (the common case) are fed their stored blob untouched — no extra cost.
+    final Map<int, List<String>> liveConflicts = await db
+        .liveConflictRevsForDocs([
+          for (final d in candidates)
+            if (d.hasLiveConflicts && mapped(d)) d.document.id,
+        ]);
 
-        // Clear previous emitted results
-        jsEngine.evaluate('emitted = []; exception = null;');
+    // Old entries, only for docs the view currently has entries for.
+    final Map<String, List<LocalViewEntry>> oldEntries = await db
+        .viewEntriesForDocs(view.id, [
+          for (final d in candidates)
+            if (d.hasViewEntries && mapped(d)) d.document.docid,
+        ]);
 
-        if (doc.data == null) {
-          log.warning(
-            'Document ${doc.document.docid} has no blob data, skipping view indexing',
-          );
-          continue;
-        }
+    final deleteDocids = <String>[];
+    final inserts = <LocalViewEntriesCompanion>[];
 
-        // Feed the winner plus `_conflicts` (CouchDB-faithful) when this doc has
-        // live conflict leaves; otherwise the stored blob verbatim.
-        final List<String>? docConflicts = liveConflicts[doc.document.id];
-        final String mapInput;
-        if (docConflicts != null && docConflicts.isNotEmpty) {
-          final Map<String, dynamic> withConflicts =
-              jsonDecode(doc.data!) as Map<String, dynamic>;
-          withConflicts['_conflicts'] = docConflicts;
-          mapInput = jsonEncode(withConflicts);
-        } else {
-          mapInput = doc.data!;
-        }
+    for (final doc in candidates) {
+      final String docid = doc.document.docid;
 
-        // Execute map function for the document
-        final mapResult = jsEngine.evaluate('''
+      // Handle deleted documents: remove old view entries and skip map function
+      if (doc.document.deleted == true) {
+        if (doc.hasViewEntries) deleteDocids.add(docid);
+        continue;
+      }
+
+      if (doc.data == null) {
+        log.warning('Document $docid has no blob data, skipping view indexing');
+        continue;
+      }
+
+      final jsEngine = engine();
+
+      // Clear previous emitted results
+      jsEngine.evaluate('emitted = []; exception = null;');
+
+      // Feed the winner plus `_conflicts` (CouchDB-faithful) when this doc has
+      // live conflict leaves; otherwise the stored blob verbatim.
+      final List<String>? docConflicts = liveConflicts[doc.document.id];
+      final String mapInput;
+      if (docConflicts != null && docConflicts.isNotEmpty) {
+        final Map<String, dynamic> withConflicts =
+            jsonDecode(doc.data!) as Map<String, dynamic>;
+        withConflicts['_conflicts'] = docConflicts;
+        mapInput = jsonEncode(withConflicts);
+      } else {
+        mapInput = doc.data!;
+      }
+
+      // Execute map function for the document
+      final mapResult = jsEngine.evaluate('''
           try {
             mapFunction($mapInput);
           } catch (e) {
-            console.error('Map function error for doc ${doc.document.docid}: ' + e.toString());
+            console.error('Map function error for doc $docid: ' + e.toString());
             exception = e;
           }
         ''');
 
-        if (mapResult.isError) {
-          log.severe(
-            'JS evaluation failed for document ${doc.document.docid}: ${mapResult.stringResult}',
-          );
-          continue;
-        }
-
-        // check exception
-        final JsEvalResult e = jsEngine.evaluate('exception;');
-        if (!e.isError && e.stringResult != 'null') {
-          log.severe(
-            'Error in map function for document ${doc.document.docid}: ${e.stringResult}',
-          );
-          // CouchDB behavior: log the error but continue processing other documents
-          // Skip this document and continue with the next one
-          continue;
-        }
-
-        // Get emitted results
-        final JsEvalResult result = jsEngine.evaluate(
-          'JSON.stringify(emitted)',
+      if (mapResult.isError) {
+        log.severe(
+          'JS evaluation failed for document $docid: ${mapResult.stringResult}',
         );
-        if (!result.isError && result.stringResult != 'undefined') {
-          final List<dynamic> emittedResults = List<dynamic>.from(
-            jsonDecode(result.stringResult),
-          );
-
-          /*if (emittedResults.isNotEmpty) {
-            log.fine(
-              'Document ${doc.document.docid} emitted ${emittedResults.length} results',
-            );
-          }*/
-
-          // First remove old view entries for this document
-          await _removeOldViewEntries(doc.document.docid);
-
-          // Then store new view entries
-          for (var emitted in emittedResults) {
-            await _storeViewEntry(
-              docid: doc.document.docid,
-              seqNumber: doc.document.seq,
-              key: emitted['key'],
-              value: emitted['value'],
-            );
-          }
-        }
+        continue;
       }
 
-      // 4. Update the last indexed sequence number in the views table
-      await _updateViewSequence(curUpdateSeq);
+      // check exception
+      final JsEvalResult e = jsEngine.evaluate('exception;');
+      if (!e.isError && e.stringResult != 'null') {
+        log.severe(
+          'Error in map function for document $docid: ${e.stringResult}',
+        );
+        // CouchDB behavior: log the error but continue processing other documents
+        // Skip this document and continue with the next one
+        continue;
+      }
 
-      // Reload the view object to get the updated updateSeq
-      final updatedView = await (db.select(
-        db.localViews,
-      )..where((tbl) => tbl.id.equals(view.id))).getSingle();
-      view = updatedView;
+      // Get emitted results
+      final JsEvalResult result = jsEngine.evaluate('JSON.stringify(emitted)');
+      if (result.isError || result.stringResult == 'undefined') continue;
 
-      // Log how many entries were stored
-      final entryCount =
-          await (db.selectOnly(db.localViewEntries)
-                ..addColumns([db.localViewEntries.id.count()])
-                ..where(db.localViewEntries.fkview.equals(view.id)))
-              .getSingle();
-      log.info(
-        'View now has ${entryCount.read(db.localViewEntries.id.count())} entries, updateSeq updated to ${view.updateSeq}',
+      final List<dynamic> emittedResults = List<dynamic>.from(
+        jsonDecode(result.stringResult),
       );
-    } catch (e) {
-      log.severe('Error executing JavaScript map function: $e');
-      rethrow; // Re-throw the error to let the caller handle it
-    } finally {
-      jsEngine.dispose();
+      // Stored form, exactly as before: JSON-encoded key and value.
+      final newRows = <(String, String)>[
+        for (final emitted in emittedResults)
+          (jsonEncode(emitted['key']), jsonEncode(emitted['value'])),
+      ];
+
+      final List<LocalViewEntry> old =
+          oldEntries[docid] ?? const <LocalViewEntry>[];
+      if (_sameEntries(old, newRows)) continue; // unchanged: no writes
+
+      // Replace this doc's entries. The delete also runs when no old entries
+      // were seen (cheap no-op), so a concurrent indexer of the same view can
+      // never leave duplicates behind.
+      deleteDocids.add(docid);
+      for (final (key, value) in newRows) {
+        inserts.add(
+          LocalViewEntriesCompanion.insert(
+            fkview: view.id,
+            docid: docid,
+            key: key,
+            value: value,
+          ),
+        );
+      }
     }
+
+    return _PageWrites(deleteDocids, inserts);
   }
 
-  Future<void> _removeOldViewEntries(String docid) async {
-    await (db.delete(
-          db.localViewEntries,
-        )..where((tbl) => tbl.fkview.equals(view.id) & tbl.docid.equals(docid)))
-        .go();
-  }
-
-  Future<void> _storeViewEntry({
-    required String docid,
-    required int seqNumber,
-    required dynamic key,
-    required dynamic value,
-  }) async {
-    try {
-      await db
-          .into(db.localViewEntries)
-          .insert(
-            LocalViewEntriesCompanion.insert(
-              fkview: view.id,
-              docid: docid,
-              key: jsonEncode(key),
-              value: jsonEncode(value),
-            ),
-          );
-    } catch (e) {
-      log.severe('Failed to store view entry for $docid: $e');
-      rethrow;
+  /// Whether [old] (in row-id order) holds exactly [rows] in that order.
+  static bool _sameEntries(
+    List<LocalViewEntry> old,
+    List<(String, String)> rows,
+  ) {
+    if (old.length != rows.length) return false;
+    for (var i = 0; i < old.length; i++) {
+      if (old[i].key != rows[i].$1 || old[i].value != rows[i].$2) {
+        return false;
+      }
     }
-  }
-
-  Future<void> _updateViewSequence(int sequence) async {
-    await (db.update(db.localViews)..where((tbl) => tbl.id.equals(view.id)))
-        .write(LocalViewsCompanion(updateSeq: Value(sequence)));
+    return true;
   }
 
   /// Resolves built-in reduce function names to their JavaScript implementations.
@@ -814,6 +979,20 @@ class ViewCtrl {
       jsRuntime.dispose();
     }
   }
+}
+
+/// Entry writes of one indexing page.
+class _PageWrites {
+  /// Docs whose entries are removed (tombstones, changed docs).
+  final List<String> deleteDocids;
+
+  /// New entries of the changed docs.
+  final List<LocalViewEntriesCompanion> inserts;
+
+  const _PageWrites(this.deleteDocids, this.inserts);
+  const _PageWrites.empty() : deleteDocids = const [], inserts = const [];
+
+  bool get hasWrites => deleteDocids.isNotEmpty || inserts.isNotEmpty;
 }
 
 class _ViewEntryIntermediate {

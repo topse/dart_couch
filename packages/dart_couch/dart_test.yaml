@@ -7,4 +7,4 @@ timeout: 6x
 # suite spins up its own CouchDB container, so keep this modest relative to
 # available RAM/CPU. Override per run with `dart test -jN`.
 # RAM estimation: (N * 3 + 6) GB
-concurrency: 2
+concurrency: 3

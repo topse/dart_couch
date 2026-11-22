@@ -178,11 +178,30 @@ Future<void> tearDownAllHttpFunction() async {
   return Future.value();
 }
 
+/// Servers created by [setUpAllLocalFunction] that [tearDownAllLocalFunction]
+/// has not disposed yet.
+final List<LocalDartCouchServer> _localServers = <LocalDartCouchServer>[];
+
+/// Creates a [LocalDartCouchServer] in a fresh SQLite dir. Pair it with
+/// [tearDownAllLocalFunction] (like [setUpAllHttpFunction] /
+/// [tearDownAllHttpFunction]): an undisposed server keeps its `AppDatabase`
+/// open, and the next one in the same isolate triggers drift's "created the
+/// database class AppDatabase multiple times" warning.
 Future<DartCouchServer> setUpAllLocalFunction() async {
   final sqliteDir = prepareSqliteDir();
   final cl = LocalDartCouchServer(sqliteDir);
+  _localServers.add(cl);
   log.info('Using local database at $sqliteDir');
   return cl;
+}
+
+/// Disposes every server [setUpAllLocalFunction] created.
+Future<void> tearDownAllLocalFunction() async {
+  final servers = List<LocalDartCouchServer>.of(_localServers);
+  _localServers.clear();
+  for (final s in servers) {
+    await s.dispose();
+  }
 }
 
 Future<void> doLogin(
@@ -273,42 +292,27 @@ Future<String> startCouchDb(
   // suite/process could grab it before `docker run` binds it. On that rare
   // collision Docker fails with "port is already allocated"; we re-allocate and
   // retry. A pinned port must not change, so a collision there fails loudly.
-  String dockerid = "";
-  ProcessResult result;
+  String? dockerid;
   const maxPortAttempts = 5;
   for (var attempt = 1; ; attempt++) {
     couchPort = port ?? await CouchTestManager.findFreePort();
-    result = await Process.run('docker', [
-      'run',
-      '-e',
-      'COUCHDB_USER=$adminUser',
-      '-e',
-      'COUCHDB_PASSWORD=$password',
-      '-d',
-      '--label',
-      testContainerLabel,
-      '-p',
-      '$couchPort:5984',
-      '--mount',
-      'type=bind,src=${Directory.current.absolute.path}/couchdb-test-config,dst=/opt/couchdb/etc/local.d/',
-      couchDbImage,
-    ]);
-    if (result.exitCode == 0) break;
-    final stderr = result.stderr.toString();
-    final portTaken =
-        stderr.contains('port is already allocated') ||
-        stderr.contains('address already in use');
+    dockerid = await CouchTestManager.createAndStartCouchContainer(
+      image: couchDbImage,
+      adminUser: adminUser,
+      password: password,
+      port: couchPort!,
+    );
+    if (dockerid != null) break;
     // Only retry with a NEW port when we're free to choose one. A pinned port
     // (relogin test) must stay fixed, so a collision there is a hard failure.
-    if (!portTaken || port != null || attempt >= maxPortAttempts) {
-      throw ('Failed to start container: $stderr');
+    if (port != null || attempt >= maxPortAttempts) {
+      throw ('Failed to start container: port $couchPort already allocated');
     }
     log.info(
       'Port $couchPort was taken before docker could bind it '
       '(attempt $attempt/$maxPortAttempts), retrying with a new port...',
     );
   }
-  dockerid = result.stdout.toString().trim();
   // Wait for CouchDB to start
   log.info('Waiting for CouchDB to start on $couchUri ...');
   await waitForCouchDb(dockerid);
@@ -332,7 +336,9 @@ Future<String> startCouchDb(
   return dockerid;
 }
 
-Future<void> waitForCouchDb(String dockerid, [int maxAttempts = 30]) async {
+// 60 × 500 ms like CouchTestManager: a container starting on a loaded machine
+// (several suites start CouchDB at the same time) can need more than 15 s.
+Future<void> waitForCouchDb(String dockerid, [int maxAttempts = 60]) async {
   int attempts = 0;
   while (attempts < maxAttempts) {
     try {

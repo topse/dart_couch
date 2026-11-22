@@ -19,6 +19,11 @@ class LocalDatabases extends Table {
 @TableIndex(name: 'local_documents_docid', columns: {#docid})
 @TableIndex(name: 'local_documents_version', columns: {#version})
 @TableIndex(name: 'local_documents_seq', columns: {#seq})
+// v7: incremental view indexing / changes scan `fkdatabase = ? AND seq > ?`.
+@TableIndex(
+  name: 'local_documents_fkdatabase_seq',
+  columns: {#fkdatabase, #seq},
+)
 @TableIndex(
   name: 'local_documents_fkdatabase_docid',
   columns: {#fkdatabase, #docid},
@@ -197,8 +202,10 @@ class LocalAttachments extends Table {
   /// conflict-leaf row drops its attachment rows via
   /// `delete_conflict_attachments_before_conflict_revision`; the Dart layer
   /// deletes the files (triggers cannot touch the filesystem).
-  late final IntColumn fkconflict =
-      integer().nullable().references(LocalConflictRevisions, #id)();
+  late final IntColumn fkconflict = integer().nullable().references(
+    LocalConflictRevisions,
+    #id,
+  )();
 }
 
 @TableIndex(name: 'local_view_view_path_short_index', columns: {#viewPathShort})
@@ -224,6 +231,11 @@ class LocalViews extends Table {
 /// There can be multiple entries in a view
 /// with identical docid, key and value
 @TableIndex(name: 'local_view_entries_docid_index', columns: {#docid})
+// v7: view queries filter by `fkview` and sort by `key` (docid as tiebreak).
+@TableIndex(
+  name: 'local_view_entries_fkview_key_docid',
+  columns: {#fkview, #key, #docid},
+)
 class LocalViewEntries extends Table {
   late final IntColumn id = integer().autoIncrement()();
   late final fkview = integer().references(LocalViews, #id)();
@@ -237,7 +249,38 @@ class LocalDocumentWithBlob {
   final LocalDocument document;
   final String? data; // null if blob not loaded
 
-  LocalDocumentWithBlob({required this.document, this.data});
+  /// Whether the document row has at least one **winner** attachment
+  /// (`fkconflict IS NULL`). `null` = not determined by the loading query;
+  /// callers must then look the attachments up themselves. Lets read paths
+  /// skip the attachment query for the (common) attachment-less document.
+  final bool? hasAttachments;
+
+  LocalDocumentWithBlob({
+    required this.document,
+    this.data,
+    this.hasAttachments,
+  });
+}
+
+/// One row of [AppDatabase.getViewIndexPage].
+class ViewIndexSourceDoc {
+  final LocalDocument document;
+
+  /// JSON body of the winner; null for tombstones.
+  final String? data;
+
+  /// The doc has at least one non-deleted conflict leaf.
+  final bool hasLiveConflicts;
+
+  /// The view being indexed holds at least one entry for this doc.
+  final bool hasViewEntries;
+
+  ViewIndexSourceDoc({
+    required this.document,
+    required this.data,
+    required this.hasLiveConflicts,
+    required this.hasViewEntries,
+  });
 }
 
 @DriftDatabase(
@@ -259,8 +302,19 @@ class AppDatabase extends _$AppDatabase {
   /// platform-appropriate executor.
   AppDatabase(super.executor);
 
+  /// Set as soon as [close] starts, so long-lived watchers
+  /// ([watchDocumentBatches]) stop issuing queries and treat in-flight
+  /// failures as expected.
+  bool _closing = false;
+
   @override
-  int get schemaVersion => 6;
+  Future<void> close() {
+    _closing = true;
+    return super.close();
+  }
+
+  @override
+  int get schemaVersion => 8;
 
   @override
   MigrationStrategy get migration {
@@ -579,6 +633,33 @@ class AppDatabase extends _$AppDatabase {
             END;
           ''');
         }
+        if (from < 7) {
+          // v6 -> v7: read-path indices. View queries filter by fkview and
+          // order by key; incremental view updates scan by (fkdatabase, seq).
+          await customStatement(
+            'CREATE INDEX IF NOT EXISTS local_view_entries_fkview_key_docid '
+            'ON local_view_entries (fkview, "key", docid)',
+          );
+          await customStatement(
+            'CREATE INDEX IF NOT EXISTS local_documents_fkdatabase_seq '
+            'ON local_documents (fkdatabase, seq)',
+          );
+        }
+        if (from < 8) {
+          // v7 -> v8: `_all_docs` is served directly from local_documents
+          // (see LocalDartCouchDb._internalAllDocs); the materialised
+          // `_all_docs` view is no longer maintained or read. Drop its rows.
+          // Entries are deleted explicitly (not only via the
+          // delete_local_view_entries_before_view trigger) so the cleanup is
+          // complete even on databases whose trigger set predates it.
+          await customStatement(
+            'DELETE FROM local_view_entries WHERE fkview IN '
+            "(SELECT id FROM local_views WHERE view_path_short = '_all_docs')",
+          );
+          await customStatement(
+            "DELETE FROM local_views WHERE view_path_short = '_all_docs'",
+          );
+        }
       },
       beforeOpen: (details) async {
         await customStatement('PRAGMA foreign_keys = ON');
@@ -657,7 +738,40 @@ class AppDatabase extends _$AppDatabase {
     ).get();
     final map = <int, List<String>>{};
     for (final r in rows) {
-      (map[r.read<int>('fkdocument')] ??= <String>[]).add(r.read<String>('rev'));
+      (map[r.read<int>('fkdocument')] ??= <String>[]).add(
+        r.read<String>('rev'),
+      );
+    }
+    return map;
+  }
+
+  /// All conflict-leaf revs (deleted ones included) of the given document row
+  /// ids, grouped by document row id; documents without conflict leaves are
+  /// absent. One query per [batchReadChunkSize] ids via
+  /// `local_conflict_revisions_fkdocument_index`; per document the leaves are
+  /// in row-id order, like [getConflictRevisions]. Used by the continuous
+  /// `style=all_docs` changes feed, one call per emitted page.
+  Future<Map<int, List<String>>> conflictRevsForDocs(
+    List<int> docRowIds,
+  ) async {
+    final map = <int, List<String>>{};
+    if (docRowIds.isEmpty) return map;
+    final unique = docRowIds.toSet().toList(growable: false);
+    for (var i = 0; i < unique.length; i += batchReadChunkSize) {
+      final chunk = unique.sublist(
+        i,
+        i + batchReadChunkSize > unique.length
+            ? unique.length
+            : i + batchReadChunkSize,
+      );
+      final rows =
+          await (select(localConflictRevisions)
+                ..where((t) => t.fkdocument.isIn(chunk))
+                ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+              .get();
+      for (final r in rows) {
+        (map[r.fkdocument] ??= <String>[]).add(r.rev);
+      }
     }
     return map;
   }
@@ -684,7 +798,9 @@ class AppDatabase extends _$AppDatabase {
     ).get();
     final map = <int, List<String>>{};
     for (final r in rows) {
-      (map[r.read<int>('fkdocument')] ??= <String>[]).add(r.read<String>('rev'));
+      (map[r.read<int>('fkdocument')] ??= <String>[]).add(
+        r.read<String>('rev'),
+      );
     }
     return map;
   }
@@ -701,10 +817,9 @@ class AppDatabase extends _$AppDatabase {
     required bool deleted,
     required String? body,
   }) async {
-    await (delete(localConflictRevisions)..where(
-          (t) => t.fkdocument.equals(docRowId) & t.rev.equals(rev),
-        ))
-        .go();
+    await (delete(
+      localConflictRevisions,
+    )..where((t) => t.fkdocument.equals(docRowId) & t.rev.equals(rev))).go();
     return into(localConflictRevisions).insert(
       LocalConflictRevisionsCompanion.insert(
         fkdocument: docRowId,
@@ -734,10 +849,9 @@ class AppDatabase extends _$AppDatabase {
   /// Removes the conflict leaf [rev] of document row [docRowId] (e.g. when an
   /// incoming revision supersedes it, or it is promoted to winner).
   Future<void> deleteConflictRevision(int docRowId, String rev) async {
-    await (delete(localConflictRevisions)..where(
-          (t) => t.fkdocument.equals(docRowId) & t.rev.equals(rev),
-        ))
-        .go();
+    await (delete(
+      localConflictRevisions,
+    )..where((t) => t.fkdocument.equals(docRowId) & t.rev.equals(rev))).go();
   }
 
   /// Deletes every [RevisionHistories] row of document row [docRowId].
@@ -788,13 +902,21 @@ class AppDatabase extends _$AppDatabase {
             ])
             ..where(localDocuments.docid.equals(docId))
             ..where(localDocuments.fkdatabase.equals(dbId));
+      // Same round trip: does the doc have winner attachments? Lets callers
+      // skip the attachment query for attachment-less documents.
+      final hasAtt = _hasWinnerAttachmentsExpr();
+      query.addColumns([hasAtt]);
 
       final row = await query.getSingleOrNull();
 
       if (row == null) return null;
       final doc = row.readTable(localDocuments);
       final blob = loadBlob ? row.readTableOrNull(documentBlobs) : null;
-      res = LocalDocumentWithBlob(document: doc, data: blob?.data);
+      res = LocalDocumentWithBlob(
+        document: doc,
+        data: blob?.data,
+        hasAttachments: row.read(hasAtt),
+      );
     }
 
     // check if the document is deleted
@@ -808,6 +930,223 @@ class AppDatabase extends _$AppDatabase {
     if (rev != null && rev != res?.document.rev) return null;
 
     return res;
+  }
+
+  /// Correlated `EXISTS` over the **winner** attachments (`fkconflict IS
+  /// NULL`) of the current `local_documents` row. Served by
+  /// `local_attachments_fkdocument_index`.
+  Expression<bool> _hasWinnerAttachmentsExpr() => existsQuery(
+    selectOnly(localAttachments)
+      ..addColumns([localAttachments.id])
+      ..where(
+        localAttachments.fkdocument.equalsExp(localDocuments.id) &
+            localAttachments.fkconflict.isNull(),
+      ),
+  );
+
+  /// Maximum number of bound `IN (...)` parameters per batched read. Well
+  /// below SQLite's historical 999-variable limit; plain `IN` (not
+  /// `json_each`) so it works with system SQLite builds lacking JSON1.
+  static const int batchReadChunkSize = 500;
+
+  /// Batch-loads the **current winner rows** of [docids] in database [dbid]
+  /// (one query per [batchReadChunkSize] distinct ids, via the unique
+  /// `(fkdatabase, docid)` index). Returns a map keyed by docid; ids that do
+  /// not exist are absent. Deleted (tombstoned) rows ARE included - the
+  /// caller applies its own visibility rule (cf. [getDocument]).
+  ///
+  /// [withBlob] additionally joins the JSON body. Every returned row carries
+  /// [LocalDocumentWithBlob.hasAttachments], computed in the same query.
+  Future<Map<String, LocalDocumentWithBlob>> getDocumentsByIds(
+    int dbid,
+    List<String> docids, {
+    bool withBlob = true,
+  }) async {
+    final result = <String, LocalDocumentWithBlob>{};
+    if (docids.isEmpty) return result;
+    final unique = docids.toSet().toList(growable: false);
+    final hasAtt = _hasWinnerAttachmentsExpr();
+
+    for (var i = 0; i < unique.length; i += batchReadChunkSize) {
+      final chunk = unique.sublist(
+        i,
+        i + batchReadChunkSize > unique.length
+            ? unique.length
+            : i + batchReadChunkSize,
+      );
+      final query =
+          select(localDocuments).join([
+              if (withBlob)
+                leftOuterJoin(
+                  documentBlobs,
+                  documentBlobs.documentId.equalsExp(localDocuments.id),
+                ),
+            ])
+            ..addColumns([hasAtt])
+            ..where(
+              localDocuments.fkdatabase.equals(dbid) &
+                  localDocuments.docid.isIn(chunk),
+            );
+      for (final row in await query.get()) {
+        final doc = row.readTable(localDocuments);
+        result[doc.docid] = LocalDocumentWithBlob(
+          document: doc,
+          data: withBlob ? row.readTableOrNull(documentBlobs)?.data : null,
+          hasAttachments: row.read(hasAtt),
+        );
+      }
+    }
+    return result;
+  }
+
+  /// Batch-loads the **winner** attachment metadata (`fkconflict IS NULL`)
+  /// of the given `local_documents` row ids, one query per
+  /// [batchReadChunkSize] distinct ids. Each list has the same order as
+  /// [getAttachments] (`ordering`); documents without attachments are absent.
+  Future<Map<int, List<LocalAttachment>>> getAttachmentsForDocs(
+    List<int> documentRowIds,
+  ) async {
+    final result = <int, List<LocalAttachment>>{};
+    if (documentRowIds.isEmpty) return result;
+    final unique = documentRowIds.toSet().toList(growable: false);
+
+    for (var i = 0; i < unique.length; i += batchReadChunkSize) {
+      final chunk = unique.sublist(
+        i,
+        i + batchReadChunkSize > unique.length
+            ? unique.length
+            : i + batchReadChunkSize,
+      );
+      final rows =
+          await (select(localAttachments)
+                ..where(
+                  (tbl) => tbl.fkdocument.isIn(chunk) & tbl.fkconflict.isNull(),
+                )
+                ..orderBy([
+                  (tbl) => OrderingTerm(expression: tbl.fkdocument),
+                  (tbl) => OrderingTerm(expression: tbl.ordering),
+                ]))
+              .get();
+      for (final row in rows) {
+        result.putIfAbsent(row.fkdocument, () => []).add(row);
+      }
+    }
+    return result;
+  }
+
+  /// The rows `_all_docs` lists in range mode: current winner rows of [dbid]
+  /// that are not deleted and not `_local/` documents (design documents ARE
+  /// included, like CouchDB).
+  ///
+  /// The `_local/` exclusion is a half-open docid range (`'_local0'` is the
+  /// successor prefix of `'_local/'`) rather than `LIKE`, so it is evaluated
+  /// with the BINARY collation of the `(fkdatabase, docid)` index and is
+  /// independent of `PRAGMA case_sensitive_like`.
+  Expression<bool> _allDocsVisible(int dbid) =>
+      localDocuments.fkdatabase.equals(dbid) &
+      (localDocuments.deleted.isNull() | localDocuments.deleted.equals(false)) &
+      (localDocuments.docid.isBiggerOrEqualValue('_local/') &
+              localDocuments.docid.isSmallerThanValue('_local0'))
+          .not();
+
+  /// `total_rows` of `_all_docs`: the number of rows [_allDocsVisible]
+  /// selects. One `SELECT COUNT(*)` over the `(fkdatabase, docid)` index.
+  Future<int> countAllDocs(int dbid) async {
+    final count = countAll();
+    final row =
+        await (selectOnly(localDocuments)
+              ..addColumns([count])
+              ..where(_allDocsVisible(dbid)))
+            .getSingle();
+    return row.read(count) ?? 0;
+  }
+
+  /// Number of `_all_docs` rows ([_allDocsVisible]) that precede [startId] in
+  /// iteration order: `docid < startId` ascending, `docid > startId`
+  /// [descending]. Basis of CouchDB's `offset` for a range starting there.
+  Future<int> countAllDocsBefore(
+    int dbid,
+    String startId, {
+    bool descending = false,
+  }) async {
+    final count = countAll();
+    final docid = localDocuments.docid;
+    final row =
+        await (selectOnly(localDocuments)
+              ..addColumns([count])
+              ..where(
+                _allDocsVisible(dbid) &
+                    (descending
+                        ? docid.isBiggerThanValue(startId)
+                        : docid.isSmallerThanValue(startId)),
+              ))
+            .getSingle();
+    return row.read(count) ?? 0;
+  }
+
+  /// One page of `_all_docs` range mode: rows selected by [_allDocsVisible],
+  /// restricted to `docid` in the given bounds (each optional; inclusive or
+  /// exclusive), ordered by `docid` (BINARY = code point order) ascending or
+  /// [descending], `LIMIT limit OFFSET offset`. Callers page with keyset
+  /// pagination by tightening a bound to the last docid of the previous page.
+  ///
+  /// [equals] additionally restricts to one exact docid (`key=`).
+  ///
+  /// With [withBlob] the JSON body is joined and
+  /// [LocalDocumentWithBlob.hasAttachments] computed in the same query.
+  Future<List<LocalDocumentWithBlob>> getAllDocsPage(
+    int dbid, {
+    String? lower,
+    bool lowerInclusive = true,
+    String? upper,
+    bool upperInclusive = true,
+    String? equals,
+    bool descending = false,
+    required int limit,
+    int offset = 0,
+    bool withBlob = false,
+  }) async {
+    final docid = localDocuments.docid;
+    var where = _allDocsVisible(dbid);
+    if (lower != null) {
+      where &= lowerInclusive
+          ? docid.isBiggerOrEqualValue(lower)
+          : docid.isBiggerThanValue(lower);
+    }
+    if (upper != null) {
+      where &= upperInclusive
+          ? docid.isSmallerOrEqualValue(upper)
+          : docid.isSmallerThanValue(upper);
+    }
+    if (equals != null) where &= docid.equals(equals);
+
+    final hasAtt = withBlob ? _hasWinnerAttachmentsExpr() : null;
+    final query =
+        select(localDocuments).join([
+            if (withBlob)
+              leftOuterJoin(
+                documentBlobs,
+                documentBlobs.documentId.equalsExp(localDocuments.id),
+              ),
+          ])
+          ..where(where)
+          ..orderBy([
+            OrderingTerm(
+              expression: docid,
+              mode: descending ? OrderingMode.desc : OrderingMode.asc,
+            ),
+          ])
+          ..limit(limit, offset: offset > 0 ? offset : null);
+    if (hasAtt != null) query.addColumns([hasAtt]);
+    final rows = await query.get();
+    return [
+      for (final row in rows)
+        LocalDocumentWithBlob(
+          document: row.readTable(localDocuments),
+          data: withBlob ? row.readTableOrNull(documentBlobs)?.data : null,
+          hasAttachments: hasAtt != null ? row.read(hasAtt) : null,
+        ),
+    ];
   }
 
   /// get all documents with seq number higher than given
@@ -938,7 +1277,9 @@ class AppDatabase extends _$AppDatabase {
   /// conflict leaf can carry an attachment with the same name as the winner.
   Future<List<LocalAttachment>> getAttachments(int dbdocid) {
     return (select(localAttachments)
-          ..where((tbl) => tbl.fkdocument.equals(dbdocid) & tbl.fkconflict.isNull())
+          ..where(
+            (tbl) => tbl.fkdocument.equals(dbdocid) & tbl.fkconflict.isNull(),
+          )
           ..orderBy([(tbl) => OrderingTerm(expression: tbl.ordering)]))
         .get();
   }
@@ -1106,8 +1447,7 @@ class AppDatabase extends _$AppDatabase {
               documentBlobs,
               documentBlobs.documentId.equalsExp(localDocuments.id),
             ),
-          ])
-          ..where(
+          ])..where(
             localDocuments.fkdatabase.equals(dbId) &
                 localDocuments.docid.isIn(chunk),
           );
@@ -1141,15 +1481,14 @@ class AppDatabase extends _$AppDatabase {
     for (var i = 0; i < documentIds.length; i += chunkSize) {
       final chunk = documentIds.sublist(
         i,
-        i + chunkSize > documentIds.length
-            ? documentIds.length
-            : i + chunkSize,
+        i + chunkSize > documentIds.length ? documentIds.length : i + chunkSize,
       );
 
-      final rows = await (select(localAttachments)
-            ..where((tbl) => tbl.fkdocument.isIn(chunk))
-            ..orderBy([(tbl) => OrderingTerm(expression: tbl.ordering)]))
-          .get();
+      final rows =
+          await (select(localAttachments)
+                ..where((tbl) => tbl.fkdocument.isIn(chunk))
+                ..orderBy([(tbl) => OrderingTerm(expression: tbl.ordering)]))
+              .get();
 
       for (final row in rows) {
         result.putIfAbsent(row.fkdocument, () => []).add(row);
@@ -1171,132 +1510,393 @@ class AppDatabase extends _$AppDatabase {
     return row.updateSeq;
   }
 
-  /// Watch for new or updated documents in the given database.
+  int _activeWatchers = 0;
+  int _runningWatchScans = 0;
+
+  /// Diagnostics / tests: number of live [watchDocumentBatches] streams.
+  int get activeWatchers => _activeWatchers;
+
+  /// Diagnostics / tests: no [watchDocumentBatches] scan is running. Table
+  /// updates reach the watchers synchronously when a write's transaction
+  /// completes, so right after an awaited write every affected watcher is
+  /// already scanning: waiting for this state is waiting for "every watcher
+  /// has processed every completed write".
+  bool get watchScansIdle => _runningWatchScans == 0;
+
+  /// Page size of the seq-ordered scans behind [watchDocumentBatches].
+  static const int watchPageSize = 500;
+
+  /// Documents of [dbId] with `seq > afterSeq`, ascending by `seq`, at most
+  /// [limit] rows — one query, served by `local_documents_fkdatabase_seq`.
   ///
-  /// The returned stream emits a `LocalDocumentWithBlob` for every document
-  /// whose `seq` becomes greater than the latest seen sequence at the time
-  /// the watcher is started. The stream stops when the database query watch
-  /// closes or when the caller cancels the subscription.
+  /// Deleted (tombstoned) rows ARE included. With [loadBlob] the JSON body is
+  /// joined (null for tombstones) and [LocalDocumentWithBlob.hasAttachments]
+  /// is computed in the same query; without it both stay null (same shape as
+  /// [getDocument] with `loadBlob: false`).
+  Future<List<LocalDocumentWithBlob>> getDocumentsAfterSeq(
+    int dbId,
+    int afterSeq,
+    bool loadBlob, {
+    int limit = watchPageSize,
+  }) async {
+    final hasAtt = loadBlob ? _hasWinnerAttachmentsExpr() : null;
+    final query =
+        select(localDocuments).join([
+            if (loadBlob)
+              leftOuterJoin(
+                documentBlobs,
+                documentBlobs.documentId.equalsExp(localDocuments.id),
+              ),
+          ])
+          ..where(
+            localDocuments.fkdatabase.equals(dbId) &
+                localDocuments.seq.isBiggerThanValue(afterSeq),
+          )
+          ..orderBy([OrderingTerm.asc(localDocuments.seq)])
+          ..limit(limit);
+    if (hasAtt != null) query.addColumns([hasAtt]);
+    final rows = await query.get();
+    return [
+      for (final row in rows)
+        LocalDocumentWithBlob(
+          document: row.readTable(localDocuments),
+          data: loadBlob ? row.readTableOrNull(documentBlobs)?.data : null,
+          hasAttachments: hasAtt != null ? row.read(hasAtt) : null,
+        ),
+    ];
+  }
+
+  /// One page of view-indexing input: the documents of [dbId] with
+  /// `seq > afterSeq`, ascending by `seq`, at most [limit] rows, with their
+  /// JSON body (null for tombstones) — one query, served by
+  /// `local_documents_fkdatabase_seq`. Deleted rows ARE included.
   ///
-  /// If [since] is provided, existing documents with `since < seq <= currentSeq`
-  /// are replayed first before watching for future changes. This is necessary
-  /// for the continuous changes feed to not miss documents that were already
-  /// written to the database before the watcher subscribed.
+  /// Each row also carries, computed in the same query,
+  /// - [ViewIndexSourceDoc.hasLiveConflicts]: the doc has at least one
+  ///   non-deleted conflict leaf (its `_conflicts` must be loaded via
+  ///   [liveConflictRevsForDocs]);
+  /// - [ViewIndexSourceDoc.hasViewEntries]: view [viewId] currently holds at
+  ///   least one entry for the doc (its old entries must be read via
+  ///   [viewEntriesForDocs] / deleted).
+  ///
+  /// Both flags let incremental indexing skip the follow-up queries for the
+  /// common case (no conflicts; a doc the view never emitted).
+  Future<List<ViewIndexSourceDoc>> getViewIndexPage(
+    int dbId,
+    int viewId,
+    int afterSeq, {
+    int limit = watchPageSize,
+  }) async {
+    final hasConflicts = existsQuery(
+      selectOnly(localConflictRevisions)
+        ..addColumns([localConflictRevisions.id])
+        ..where(
+          localConflictRevisions.fkdocument.equalsExp(localDocuments.id) &
+              (localConflictRevisions.deleted.isNull() |
+                  localConflictRevisions.deleted.equals(false)),
+        ),
+    );
+    // `+fkview` keeps SQLite on `local_view_entries_docid_index` (a few rows
+    // per docid) instead of range-scanning the whole view via the
+    // `(fkview, key, docid)` index for every document. [viewId] is an int,
+    // so inlining it is safe.
+    final hasEntries = CustomExpression<bool>(
+      'EXISTS (SELECT 1 FROM local_view_entries ve '
+      'WHERE ve.docid = local_documents.docid AND +ve.fkview = $viewId)',
+    );
+    final query =
+        select(localDocuments).join([
+            leftOuterJoin(
+              documentBlobs,
+              documentBlobs.documentId.equalsExp(localDocuments.id),
+            ),
+          ])
+          ..addColumns([hasConflicts, hasEntries])
+          ..where(
+            localDocuments.fkdatabase.equals(dbId) &
+                localDocuments.seq.isBiggerThanValue(afterSeq),
+          )
+          ..orderBy([OrderingTerm.asc(localDocuments.seq)])
+          ..limit(limit);
+    final rows = await query.get();
+    return [
+      for (final row in rows)
+        ViewIndexSourceDoc(
+          document: row.readTable(localDocuments),
+          data: row.readTableOrNull(documentBlobs)?.data,
+          hasLiveConflicts: row.read(hasConflicts) ?? false,
+          hasViewEntries: row.read(hasEntries) ?? false,
+        ),
+    ];
+  }
+
+  /// **Live** (non-deleted) conflict-leaf revs of the given document row ids,
+  /// grouped by row id, per document in row-id order — the per-page form of
+  /// [liveConflictRevsByDoc] (same contents for those documents). One query
+  /// per [batchReadChunkSize] ids.
+  Future<Map<int, List<String>>> liveConflictRevsForDocs(
+    List<int> docRowIds,
+  ) async {
+    final map = <int, List<String>>{};
+    if (docRowIds.isEmpty) return map;
+    final unique = docRowIds.toSet().toList(growable: false);
+    for (var i = 0; i < unique.length; i += batchReadChunkSize) {
+      final chunk = unique.sublist(
+        i,
+        i + batchReadChunkSize > unique.length
+            ? unique.length
+            : i + batchReadChunkSize,
+      );
+      final rows =
+          await (select(localConflictRevisions)
+                ..where(
+                  (t) =>
+                      t.fkdocument.isIn(chunk) &
+                      (t.deleted.isNull() | t.deleted.equals(false)),
+                )
+                ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+              .get();
+      for (final r in rows) {
+        (map[r.fkdocument] ??= <String>[]).add(r.rev);
+      }
+    }
+    return map;
+  }
+
+  /// The entries of view [viewId] for [docids], grouped by docid, per doc in
+  /// insertion (row id) order. One query per [batchReadChunkSize] ids.
+  Future<Map<String, List<LocalViewEntry>>> viewEntriesForDocs(
+    int viewId,
+    List<String> docids,
+  ) async {
+    final map = <String, List<LocalViewEntry>>{};
+    if (docids.isEmpty) return map;
+    final unique = docids.toSet().toList(growable: false);
+    for (var i = 0; i < unique.length; i += batchReadChunkSize) {
+      final chunk = unique.sublist(
+        i,
+        i + batchReadChunkSize > unique.length
+            ? unique.length
+            : i + batchReadChunkSize,
+      );
+      final rows =
+          await (select(localViewEntries)
+                // `+fkview`: look the docids up via
+                // `local_view_entries_docid_index` rather than scanning the
+                // whole view (see getViewIndexPage).
+                ..where(
+                  (t) =>
+                      t.docid.isIn(chunk) &
+                      CustomExpression<bool>('+fkview = $viewId'),
+                )
+                ..orderBy([(t) => OrderingTerm.asc(t.id)]))
+              .get();
+      for (final r in rows) {
+        (map[r.docid] ??= <LocalViewEntry>[]).add(r);
+      }
+    }
+    return map;
+  }
+
+  /// Cheap validation signal for cached view definitions, in one query:
+  /// the current update seq of database [dbId], and whether any design
+  /// document (`_design/…`, deleted ones included) of it was written with a
+  /// `seq > sinceSeq`.
+  ///
+  /// Every write of a document — create, update, tombstone, conflict-leaf
+  /// change — gives its row the new database seq, and rows are never
+  /// hard-deleted except with the whole database, so "no design row with
+  /// seq > S" means no design document changed since seq S. Served by the
+  /// unique `(fkdatabase, docid)` index (prefix range over `_design/`).
+  Future<({int updateSeq, bool designDocsChanged})> designDocChangeProbe(
+    int dbId,
+    int sinceSeq,
+  ) async {
+    final changed = existsQuery(
+      selectOnly(localDocuments)
+        ..addColumns([localDocuments.id])
+        ..where(
+          localDocuments.fkdatabase.equalsExp(localDatabases.id) &
+              localDocuments.docid.isBiggerOrEqualValue('_design/') &
+              // '0' is the code point after '/': an exact `_design/` prefix
+              // range (LIKE would treat `_` as a wildcard).
+              localDocuments.docid.isSmallerThanValue('_design0') &
+              localDocuments.seq.isBiggerThanValue(sinceSeq),
+        ),
+    );
+    final row =
+        await (selectOnly(localDatabases)
+              ..addColumns([localDatabases.updateSeq, changed])
+              ..where(localDatabases.id.equals(dbId)))
+            .getSingleOrNull();
+    if (row == null) {
+      throw Exception('Database with id $dbId not found.');
+    }
+    return (
+      updateSeq: row.read(localDatabases.updateSeq)!,
+      designDocsChanged: row.read(changed) ?? false,
+    );
+  }
+
+  /// Watch for new or updated documents in the given database, one row per
+  /// changed document, in strict `seq` order. See [watchDocumentBatches] for
+  /// the semantics; this is its flattened form.
   Stream<LocalDocumentWithBlob> watchDocuments(
     int dbId,
     bool loadBlob, {
     int? since,
+  }) => watchDocumentBatches(
+    dbId,
+    loadBlob,
+    since: since,
+  ).expand((batch) => batch);
+
+  /// Watch for new or updated documents in the given database, emitted as
+  /// seq-ordered batches of at most [watchPageSize] rows.
+  ///
+  /// Start position:
+  /// - [since] == null: every existing document is replayed (all have
+  ///   `seq > 0`), then future changes follow.
+  /// - [since] given: documents with `seq > since` are replayed, then future
+  ///   changes follow. If [since] is beyond the database's current update seq
+  ///   (stale checkpoint), the start is clamped to the current update seq, so
+  ///   every document written from now on is emitted. A missing database is
+  ///   reported as an error, after which the stream closes.
+  ///
+  /// Every document row appears at most once per `seq` it reaches; a document
+  /// updated again later is emitted again with its new `seq` (CouchDB changes
+  /// semantics). Rows are read in one query per page, never per document.
+  ///
+  /// **No gap between replay and live phase:** the table-update listener is
+  /// attached *before* the first query, and replay and live updates share one
+  /// single-flight loop over `seq > lastSeq`. Seqs are allocated and committed
+  /// inside the writer's transaction, so they become visible in increasing
+  /// order; any write committed after a scan started either has a seq above
+  /// that scan's results or triggers a notification that schedules another
+  /// scan. Bursts of notifications coalesce into one rerun.
+  ///
+  /// Respects pause (back-pressure): while the listener is paused no further
+  /// page is loaded, which bounds memory on large replays. The stream ends
+  /// when the subscription is cancelled, when the database is deleted, or
+  /// when this [AppDatabase] closes; no query is issued afterwards.
+  Stream<List<LocalDocumentWithBlob>> watchDocumentBatches(
+    int dbId,
+    bool loadBlob, {
+    int? since,
   }) {
-    // single-subscription stream is fine for the current usage pattern
-    final controller = StreamController<LocalDocumentWithBlob>();
+    var counted = false;
+    late final StreamController<List<LocalDocumentWithBlob>> controller;
+    StreamSubscription<Set<TableUpdate>>? docUpdates;
+    StreamSubscription<Set<TableUpdate>>? dbDeletes;
+    Completer<void>? resumed;
 
-    // start an async task to set up the watcher
-    unawaited(() async {
-      int lastSeq;
-      if (since != null) {
-        // When resuming from a known position, we need the current updateSeq
-        // to replay any documents between 'since' and now before subscribing
-        // to the live watch.
-        try {
-          lastSeq = await getCurrentUpdateSeq(dbId);
-        } catch (e, s) {
+    var lastSeq = 0;
+    var initialized = false;
+    var running = false;
+    // Set by a notification that may not be covered by the scan in flight.
+    var dirty = false;
+    var stopped = false;
+
+    void stop() {
+      if (stopped) return;
+      stopped = true;
+      if (counted) _activeWatchers--;
+      resumed?.complete();
+      resumed = null;
+      unawaited(docUpdates?.cancel());
+      unawaited(dbDeletes?.cancel());
+      // Not awaited: close() only completes once a paused listener resumes.
+      if (!controller.isClosed) unawaited(controller.close());
+    }
+
+    bool halted() => stopped || _closing;
+
+    Future<void> pump() async {
+      if (running) {
+        dirty = true;
+        return;
+      }
+      running = true;
+      _runningWatchScans++;
+      try {
+        if (!initialized) {
+          if (since != null) {
+            final current = await getCurrentUpdateSeq(dbId);
+            if (halted()) return;
+            lastSeq = since < current ? since : current;
+          }
+          initialized = true;
+        }
+        do {
+          List<LocalDocumentWithBlob> page;
+          do {
+            if (halted()) return;
+            if (controller.isPaused) {
+              resumed = Completer<void>();
+              await resumed!.future;
+              if (halted()) return;
+            }
+            // Notifications received up to here are covered by this scan.
+            dirty = false;
+            page = await getDocumentsAfterSeq(dbId, lastSeq, loadBlob);
+            if (halted()) return;
+            if (page.isNotEmpty) {
+              lastSeq = page.last.document.seq;
+              controller.add(page);
+            }
+          } while (page.length >= watchPageSize);
+        } while (dirty);
+      } catch (e, s) {
+        // Errors caused by cancel / close are expected and swallowed.
+        if (!halted()) {
           controller.addError(e, s);
-          await controller.close();
+          stop();
+        }
+      } finally {
+        running = false;
+        _runningWatchScans--;
+      }
+    }
+
+    controller = StreamController<List<LocalDocumentWithBlob>>(
+      onListen: () {
+        counted = true;
+        _activeWatchers++;
+        if (_closing) {
+          stop();
           return;
         }
-      } else {
-        // When no 'since' is given the caller wants ALL changes from the
-        // beginning.  Setting lastSeq = 0 lets the watch's initial query
-        // fire emit every existing document (all have seq > 0).  Reading
-        // getCurrentUpdateSeq here would introduce a race: if writes commit
-        // between this read and the watch subscription, those documents
-        // would have seq <= lastSeq and be silently dropped.
-        lastSeq = 0;
-      }
-
-      // Replay existing documents between 'since' and 'lastSeq' before watching
-      // future changes. This ensures that docs already in the DB when the
-      // continuous feed starts are not missed.
-      if (since != null && since < lastSeq) {
-        try {
-          final existing =
-              await (select(localDocuments)
-                    ..where(
-                      (t) =>
-                          t.fkdatabase.equals(dbId) &
-                          t.seq.isBiggerThanValue(since) &
-                          t.seq.isSmallerOrEqualValue(lastSeq),
-                    )
-                    ..orderBy([(t) => OrderingTerm(expression: t.seq)]))
-                  .get();
-          for (final doc in existing) {
-            if (controller.isClosed) return;
-            final ldoc = await getDocument(
-              dbId,
-              doc.docid,
-              loadBlob,
-              ignoreDeleted: true,
+        // Subscribe BEFORE the first scan so no commit can slip through.
+        docUpdates = tableUpdates(
+          TableUpdateQuery.onTable(localDocuments),
+        ).listen((_) => unawaited(pump()), onDone: stop, onError: (_) {});
+        dbDeletes =
+            tableUpdates(
+              TableUpdateQuery.onTable(
+                localDatabases,
+                limitUpdateKind: UpdateKind.delete,
+              ),
+            ).listen(
+              (_) async {
+                if (halted()) return;
+                try {
+                  final row = await getDatabaseById(dbId);
+                  if (row == null) stop();
+                } catch (_) {
+                  // Closing / closed: the docUpdates onDone stops the watcher.
+                }
+              },
+              onDone: stop,
+              onError: (_) {},
             );
-            if (ldoc != null && !controller.isClosed) {
-              controller.add(ldoc);
-            }
-          }
-        } catch (e, s) {
-          if (!controller.isClosed) controller.addError(e, s);
-          await controller.close();
-          return;
-        }
-      }
-
-      // Query that returns all documents for this database ordered by seq
-      final query = (select(localDocuments)
-        ..where((t) => t.fkdatabase.equals(dbId))
-        ..orderBy([(t) => OrderingTerm(expression: t.seq)]));
-
-      // Listen for changes to the query. When rows arrive, emit only those
-      // with seq > lastSeq.
-      final subscription = query.watch().listen(
-        (rows) {
-          for (final doc in rows) {
-            if (doc.seq > lastSeq) {
-              // advance lastSeq immediately to avoid duplicates when handling
-              // asynchronous blob loading
-              final seq = doc.seq;
-              lastSeq = seq;
-
-              // load blob data asynchronously and emit when ready
-              unawaited(
-                getDocument(dbId, doc.docid, loadBlob, ignoreDeleted: true)
-                    .then((ldoc) {
-                      if (ldoc != null && !controller.isClosed) {
-                        controller.add(ldoc);
-                      }
-                    })
-                    .catchError((e, s) {
-                      if (!controller.isClosed) controller.addError(e, s);
-                    }),
-              );
-            }
-          }
-        },
-        onError: (e, s) {
-          if (!controller.isClosed) controller.addError(e, s);
-        },
-        onDone: () async {
-          try {
-            if (!controller.isClosed) await controller.close();
-          } catch (_) {}
-        },
-      );
-
-      // Wire controller cancellation to cancel the subscription
-      controller.onCancel = () async {
-        try {
-          await subscription.cancel();
-        } catch (_) {}
-      };
-    }());
-
+        unawaited(pump());
+      },
+      onResume: () {
+        resumed?.complete();
+        resumed = null;
+      },
+      onCancel: stop,
+    );
     return controller.stream;
   }
 }

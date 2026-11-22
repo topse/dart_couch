@@ -159,7 +159,16 @@ class HttpDartCouchDb extends DartCouchDb
         if (partContentType.startsWith('application/json')) {
           docMap = jsonDecode(utf8.decode(partBytes));
         } else {
-          attachmentDataQueue.add(Uint8List.fromList(partBytes));
+          // CouchDB gzip-compresses compressible content types (text/*,
+          // application/json, ...) and signals this with a MIME-level
+          // Content-Encoding header, which the http client does not handle.
+          // Decompress so the inline data matches the JSON (`_all_docs`) path.
+          final raw = Uint8List.fromList(partBytes);
+          attachmentDataQueue.add(
+            part.headers['content-encoding'] == 'gzip'
+                ? Uint8List.fromList(await gzipDecode(raw))
+                : raw,
+          );
         }
       }
 
@@ -311,9 +320,17 @@ class HttpDartCouchDb extends DartCouchDb
     bool stable = false,
     UpdateMode updateMode = UpdateMode.modeTrue,
     bool updateSeq = false,
-  }) {
-    List<String> splitted = viewPathShort.split("/");
-    assert(splitted.length == 2);
+  }) async {
+    final List<String> splitted = viewPathShort.split("/");
+    if (splitted.length != 2) {
+      // Not a view path (e.g. "_all_docs", which CouchDB serves only as its
+      // own endpoint: use allDocs()). Checked in release builds too.
+      throw ArgumentError.value(
+        viewPathShort,
+        'viewPathShort',
+        'expected "designdoc/view"',
+      );
+    }
 
     String designDocName = splitted[0];
     String viewName = splitted[1];
@@ -371,7 +388,9 @@ class HttpDartCouchDb extends DartCouchDb
     final queryParameters = <String, dynamic>{
       if (includeDocs == true) 'include_docs': 'true',
       if (includeDocs == true && attachments == true) 'attachments': 'true',
-      if (includeDocs == true && attEncodingInfo == true)
+      // With inline data, always request `encoding` (data stays decoded) so
+      // the docs match `get(attachments: true)` (multipart stubs carry it).
+      if (includeDocs == true && (attEncodingInfo || attachments))
         'att_encoding_info': 'true',
       if (includeDocs == true && conflicts == true) 'conflicts': 'true',
       if (startkey != null) 'startkey': _encodeJsonQueryValue(startkey),
@@ -834,11 +853,14 @@ class HttpDartCouchDb extends DartCouchDb
     final Map<String, dynamic> queryParameters = {
       "include_docs": includeDocs == true ? "true" : "false",
       "attachments": attachments == true ? "true" : "false",
+      // Inline data stays decoded; this only adds `encoding` to the stubs so
+      // the docs match `get(attachments: true)` (multipart stubs carry it).
+      if (includeDocs && attachments) "att_encoding_info": "true",
       "startkey": ?startkey,
       "endkey": ?endkey,
       "inclusive_end": inclusiveEnd == true ? "true" : "false",
-      "limit": ?limit,
-      "skip": ?skip,
+      if (limit != null) "limit": '$limit',
+      if (skip != null) "skip": '$skip',
       "descending": descending == true ? "true" : "false",
       "key": ?key,
     };

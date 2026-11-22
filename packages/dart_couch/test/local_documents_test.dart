@@ -13,7 +13,7 @@ void main() {
   });
 
   group('Local', () {
-    doTest(setUpAllLocalFunction, null);
+    doTest(setUpAllLocalFunction, tearDownAllLocalFunction);
   });
 }
 

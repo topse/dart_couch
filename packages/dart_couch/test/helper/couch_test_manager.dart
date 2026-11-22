@@ -312,6 +312,81 @@ class CouchTestManager {
     return ports;
   }
 
+  /// Creates and starts a CouchDB test container on host [port].
+  ///
+  /// The configuration template `couchdb-test-config/*.ini` is copied INTO the
+  /// container (`docker create` + `docker cp` + `docker start`) instead of
+  /// bind-mounting the directory: the CouchDB entrypoint takes ownership of
+  /// `local.d` and CouchDB persists config changes there, so a shared mount
+  /// let every (parallel) container rewrite the repo's template and each
+  /// other's configuration. The copy lives and dies with the container and
+  /// survives `docker stop`/`docker start`.
+  ///
+  /// Returns null when [port] was taken (the container is removed again), so
+  /// the caller can retry with another port.
+  static Future<String?> createAndStartCouchContainer({
+    required String image,
+    required String adminUser,
+    required String password,
+    required int port,
+  }) async {
+    bool portTaken(ProcessResult r) {
+      final stderr = r.stderr.toString();
+      return stderr.contains('port is already allocated') ||
+          stderr.contains('address already in use');
+    }
+
+    final create = await Process.run('docker', [
+      'create',
+      '-e',
+      'COUCHDB_USER=$adminUser',
+      '-e',
+      'COUCHDB_PASSWORD=$password',
+      '--label',
+      testContainerLabel,
+      '-p',
+      '$port:5984',
+      image,
+    ]);
+    if (create.exitCode != 0) {
+      if (portTaken(create)) return null;
+      throw ('Failed to create container: ${create.stderr}');
+    }
+    final id = create.stdout.toString().trim();
+
+    final templates =
+        Directory('${Directory.current.absolute.path}/couchdb-test-config')
+            .listSync()
+            .whereType<File>()
+            .where((f) => f.path.endsWith('.ini'))
+            .toList();
+    // CouchDB must never start without the test configuration.
+    if (!templates.any((f) => f.path.endsWith('/local.ini'))) {
+      await Process.run('docker', ['rm', '-fv', id]);
+      throw ('couchdb-test-config/local.ini not found in '
+          '${Directory.current.absolute.path}');
+    }
+    for (final f in templates) {
+      final cp = await Process.run('docker', [
+        'cp',
+        f.path,
+        '$id:/opt/couchdb/etc/local.d/',
+      ]);
+      if (cp.exitCode != 0) {
+        await Process.run('docker', ['rm', '-fv', id]);
+        throw ('Failed to copy ${f.path} into container: ${cp.stderr}');
+      }
+    }
+
+    final start = await Process.run('docker', ['start', id]);
+    if (start.exitCode != 0) {
+      await Process.run('docker', ['rm', '-fv', id]);
+      if (portTaken(start)) return null;
+      throw ('Failed to start container: ${start.stderr}');
+    }
+    return id;
+  }
+
   Future<String> _startCouchDb(
     String adminUser,
     String password,
@@ -328,40 +403,25 @@ class CouchTestManager {
     // where another suite/process could grab it before `docker run` binds it.
     // On that rare collision Docker fails with "port is already allocated"; we
     // re-allocate a fresh port and retry rather than failing the whole suite.
-    String dockerid = "";
-    ProcessResult result;
+    String? dockerid;
     const maxPortAttempts = 5;
     for (var attempt = 1; ; attempt++) {
       _port = await findFreePort();
-      result = await Process.run('docker', [
-        'run',
-        '-e',
-        'COUCHDB_USER=$adminUser',
-        '-e',
-        'COUCHDB_PASSWORD=$password',
-        '-d',
-        '--label',
-        testContainerLabel,
-        '-p',
-        '$_port:5984',
-        '--mount',
-        'type=bind,src=${Directory.current.absolute.path}/couchdb-test-config,dst=/opt/couchdb/etc/local.d/',
-        couchDbImage,
-      ]);
-      if (result.exitCode == 0) break;
-      final stderr = result.stderr.toString();
-      final portTaken =
-          stderr.contains('port is already allocated') ||
-          stderr.contains('address already in use');
-      if (!portTaken || attempt >= maxPortAttempts) {
-        throw ('Failed to start container: $stderr');
+      dockerid = await createAndStartCouchContainer(
+        image: couchDbImage,
+        adminUser: adminUser,
+        password: password,
+        port: _port!,
+      );
+      if (dockerid != null) break;
+      if (attempt >= maxPortAttempts) {
+        throw ('Failed to start container: port $_port already allocated');
       }
       _log.info(
         'Port $_port was taken before docker could bind it '
         '(attempt $attempt/$maxPortAttempts), retrying with a new port...',
       );
     }
-    dockerid = result.stdout.toString().trim();
     // Wait for CouchDB to start
     _log.info('Waiting for CouchDB to start on $uri ...');
     await _waitForCouchDb(dockerid);

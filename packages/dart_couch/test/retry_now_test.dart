@@ -103,7 +103,7 @@ void main() {
       // key derived from the admin's password salt, and re-setting the (same)
       // password makes CouchDB re-hash it with a fresh salt. Hashing finishes
       // asynchronously, so wait until the new hash is stored. The
-      // X-Couch-Persist header keeps the bind-mounted local.ini untouched.
+      // X-Couch-Persist header keeps the change out of the container's local.ini.
       final admin = http.Client();
       final adminHeaders = {
         'Authorization':

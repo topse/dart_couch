@@ -107,7 +107,12 @@ class LocalDartCouchDb extends DartCouchDb
     required this.db,
     required this.attachmentStorage,
   }) {
-    viewMgr = ViewMgr(db: db, dbGetFunction: _internalGet, dbid: dbid);
+    viewMgr = ViewMgr(
+      db: db,
+      dbGetFunction: _internalGet,
+      dbGetManyFunction: _internalGetMany,
+      dbid: dbid,
+    );
   }
 
   /// Deletes the attachment data and any leftover temporary data for [id].
@@ -500,6 +505,12 @@ class LocalDartCouchDb extends DartCouchDb
                 }
               }
 
+              // If this write tombstoned the winner, promote the best surviving
+              // conflict leaf (CouchDB rule; same as the batch write path).
+              if (isDeleted && existingDoc != null) {
+                await _promoteAfterTombstone(existingDoc.document.id, docId);
+              }
+
               results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
               for (final id in tombstoneAttachmentIds) {
                 await _deleteAttachmentFile(id);
@@ -566,28 +577,13 @@ class LocalDartCouchDb extends DartCouchDb
   /// conflicted documents: the puller's `revsDiff` then sees the conflict and
   /// tombstone leaves and transfers the ones the target lacks (forwarding;
   /// required so a resolution tombstone reaches the remote — see CLAUDE.md).
-  /// Without [styleAllDocs] only the winning rev is advertised. The per-doc
-  /// query is only run when [styleAllDocs] is set (replication), so the common
-  /// app-level changes feed pays nothing.
-  Future<List<Map<String, String>>> _changesArrayForDoc(
-    LocalDocumentWithBlob ldoc,
-    bool styleAllDocs,
-  ) async {
-    if (!styleAllDocs) {
-      return [
-        {'rev': ldoc.document.rev},
-      ];
-    }
-    final conflicts = await _getConflictRevs(ldoc.document.id);
-    return [
-      {'rev': ldoc.document.rev},
-      for (final c in conflicts) {'rev': c.rev},
-    ];
-  }
-
-  /// Synchronous variant of [_changesArrayForDoc] for the normal/long-poll feed,
-  /// using a [conflictMap] (doc row id → conflict revs) fetched once for the
-  /// whole batch via [AppDatabase.conflictRevsByDoc].
+  /// Without [styleAllDocs] only the winning rev is advertised.
+  ///
+  /// [conflictMap] (doc row id → conflict revs) is fetched once per batch:
+  /// [AppDatabase.conflictRevsByDoc] for the normal/long-poll feed,
+  /// [AppDatabase.conflictRevsForDocs] per page for the continuous feed. It
+  /// is only consulted (and only needs to be fetched) with [styleAllDocs], so
+  /// the common app-level changes feed pays nothing.
   List<Map<String, String>> _changesArrayFromMap(
     LocalDocumentWithBlob ldoc,
     bool styleAllDocs,
@@ -836,7 +832,9 @@ class LocalDartCouchDb extends DartCouchDb
   /// Shared by [bulkDocsRaw] and [bulkDocsFromMultipart] so all replication
   /// write paths maintain the conflict leaf set identically. Must run inside a
   /// `db.transaction()`.
-  Future<({bool writeAsWinner, int? incomingConflictRowId, bool leafSetChanged})>
+  Future<
+    ({bool writeAsWinner, int? incomingConflictRowId, bool leafSetChanged})
+  >
   _applyIncomingLeaf({
     required String docId,
     required String docRev,
@@ -1128,7 +1126,7 @@ class LocalDartCouchDb extends DartCouchDb
     assert(limit == 0);
     // styleAllDocs is now supported: Local stores conflict leaves (Decision A2)
     // and advertises them all in the feed so it can forward conflict branches
-    // as a replication source (Stage 3) — see _changesArrayForDoc.
+    // as a replication source (Stage 3) — see _changesArrayFromMap.
     assert(timeout == null);
     assert(seqInterval == null);
 
@@ -1270,46 +1268,54 @@ class LocalDartCouchDb extends DartCouchDb
               ? await db.getCurrentUpdateSeq(dbid)
               : sinceSeq;
           subscription = db
-              .watchDocuments(dbid, loadDocs, since: effectiveSince)
-              // Compute the (possibly multi-leaf) changes array off the listener
-              // via asyncMap, which preserves emission order — needed because
-              // style=all_docs forwarding (Stage 3) requires a per-doc conflict
-              // query. For the common app feed (styleAllDocs=false) this does no
-              // DB work.
-              .asyncMap(
-                (LocalDocumentWithBlob ldoc) async => (
-                  ldoc,
-                  await _changesArrayForDoc(ldoc, styleAllDocs),
-                ),
-              )
+              .watchDocumentBatches(dbid, loadDocs, since: effectiveSince)
+              // Compute the (possibly multi-leaf) changes arrays off the
+              // listener via asyncMap, which preserves emission order and
+              // pauses the (back-pressure aware) source meanwhile. For
+              // style=all_docs forwarding (Stage 3) the conflict leaves of the
+              // whole page are fetched in ONE query; the common app feed
+              // (styleAllDocs=false) does no DB work here.
+              .asyncMap((List<LocalDocumentWithBlob> page) async {
+                final Map<int, List<String>> conflictMap = styleAllDocs
+                    ? await db.conflictRevsForDocs([
+                        for (final ldoc in page) ldoc.document.id,
+                      ])
+                    : const <int, List<String>>{};
+                return (page, conflictMap);
+              })
               .listen(
-                ((LocalDocumentWithBlob, List<Map<String, String>>) entry) {
-                  final ldoc = entry.$1;
-                  if (controller.isClosed) {
-                    return;
+                ((List<LocalDocumentWithBlob>, Map<int, List<String>>) entry) {
+                  for (final ldoc in entry.$1) {
+                    if (controller.isClosed) {
+                      return;
+                    }
+                    // filter out local documents (_local/*) - they don't appear in changes feed
+                    if (ldoc.document.docid.startsWith('_local/')) {
+                      continue;
+                    }
+                    // apply the _view filter (runs the view's map over the doc)
+                    if (!passesFilter(ldoc)) {
+                      continue;
+                    }
+                    // Build raw JSON map for each change
+                    final json = <String, dynamic>{
+                      'seq': _makeSeqString(ldoc.document.seq),
+                      'id': ldoc.document.docid,
+                      'changes': _changesArrayFromMap(
+                        ldoc,
+                        styleAllDocs,
+                        entry.$2,
+                      ),
+                    };
+                    if (ldoc.document.deleted == true) {
+                      json['deleted'] = true;
+                    }
+                    if (includeDocs && ldoc.data != null) {
+                      json['doc'] =
+                          jsonDecode(ldoc.data!) as Map<String, dynamic>;
+                    }
+                    controller.add(json);
                   }
-                  // filter out local documents (_local/*) - they don't appear in changes feed
-                  if (ldoc.document.docid.startsWith('_local/')) {
-                    return;
-                  }
-                  // apply the _view filter (runs the view's map over the doc)
-                  if (!passesFilter(ldoc)) {
-                    return;
-                  }
-                  // Build raw JSON map for each change
-                  final json = <String, dynamic>{
-                    'seq': _makeSeqString(ldoc.document.seq),
-                    'id': ldoc.document.docid,
-                    'changes': entry.$2,
-                  };
-                  if (ldoc.document.deleted == true) {
-                    json['deleted'] = true;
-                  }
-                  if (includeDocs && ldoc.data != null) {
-                    json['doc'] =
-                        jsonDecode(ldoc.data!) as Map<String, dynamic>;
-                  }
-                  controller.add(json);
                 },
                 onError: (e) {
                   // Database may have been deleted - close the stream gracefully
@@ -1446,11 +1452,7 @@ class LocalDartCouchDb extends DartCouchDb
               conflictRowId: leaf.id,
             );
             if (attMap != null) {
-              m['_attachments'] = attMap.map((key, value) {
-                final stub = value.toMap();
-                if (value.encoding != null) stub['encoding'] = value.encoding;
-                return MapEntry(key, stub);
-              });
+              m['_attachments'] = _attachmentMapToJson(attMap);
             }
             return m;
           }
@@ -1508,25 +1510,126 @@ class LocalDartCouchDb extends DartCouchDb
       }
     }
 
-    if (ldoc.data != null) {
+    // `hasAttachments` comes from the same query as the document row; skip the
+    // attachment lookup when it is known to be empty.
+    if (ldoc.data != null && ldoc.hasAttachments != false) {
       final attachmentsMap = await _recreateAttachmentMapFromDatabase(
         ldoc.document.id,
         attachments,
         maxAttsSinceVersion: maxAttsSinceVersion,
       );
       if (attachmentsMap != null) {
-        // value.toMap() strips `encoding` via AttachmentInfoRawHook so that
-        // CouchDB protocol messages never carry it. Re-insert it here so that
-        // callers of getRaw() / get() can still read AttachmentInfo.encoding.
-        docMap['_attachments'] = attachmentsMap.map((key, value) {
-          final stub = value.toMap();
-          if (value.encoding != null) stub['encoding'] = value.encoding;
-          return MapEntry(key, stub);
-        });
+        docMap['_attachments'] = _attachmentMapToJson(attachmentsMap);
       }
     }
 
     return docMap;
+  }
+
+  /// Batched, mutex-free counterpart of [_internalGetRaw] for the default
+  /// case (current winner, no `rev`/`revs`/`revs_info`/`conflicts`/`meta`).
+  ///
+  /// Produces, for every id in [ids], exactly the map `_internalGetRaw(id,
+  /// attachments: attachments)` would return (or `null` when that returns
+  /// null: missing or deleted). Costs one document query plus at most one
+  /// attachment query per [AppDatabase.batchReadChunkSize] distinct ids,
+  /// instead of ~2 queries per document. Duplicate ids are allowed; the
+  /// result is keyed by docid.
+  Future<Map<String, Map<String, dynamic>?>> _internalGetManyRaw(
+    List<String> ids, {
+    bool attachments = false,
+  }) async {
+    if (_disposed) {
+      throw CouchDbException(
+        CouchDbStatusCodes.internalServerError,
+        'Database $dbname has been disposed',
+      );
+    }
+
+    final result = <String, Map<String, dynamic>?>{};
+    final unique = ids.toSet().toList(growable: false);
+    if (unique.isEmpty) return result;
+
+    final rows = await db.getDocumentsByIds(dbid, unique, withBlob: true);
+
+    // Same visibility rule as db.getDocument(rev: null, ignoreDeleted: false).
+    final visible = <String, LocalDocumentWithBlob>{};
+    for (final id in unique) {
+      if (id == '_local_docs') {
+        // Pseudo document handled specially by _internalGetRaw.
+        result[id] = await _internalGetRaw(id, attachments: attachments);
+        continue;
+      }
+      final ldoc = rows[id];
+      if (ldoc == null || ldoc.document.deleted == true) {
+        result[id] = null;
+      } else {
+        visible[id] = ldoc;
+      }
+    }
+
+    result.addAll(
+      await _docMapsFromRows(visible.values, attachments: attachments),
+    );
+    return result;
+  }
+
+  /// Builds, keyed by docid, the document map `_internalGetRaw(id,
+  /// attachments: attachments)` would return for each already-loaded,
+  /// **visible** (non-deleted) winner row in [rows] (body joined, see
+  /// [AppDatabase.getDocumentsByIds] / [AppDatabase.getAllDocsPage]).
+  /// Costs at most one attachment query per [AppDatabase.batchReadChunkSize]
+  /// rows, and none when no row has attachments.
+  Future<Map<String, Map<String, dynamic>>> _docMapsFromRows(
+    Iterable<LocalDocumentWithBlob> rows, {
+    required bool attachments,
+  }) async {
+    final result = <String, Map<String, dynamic>>{};
+    final attRowIds = [
+      for (final ldoc in rows)
+        if (ldoc.data != null && ldoc.hasAttachments != false) ldoc.document.id,
+    ];
+    final attsByDoc = await db.getAttachmentsForDocs(attRowIds);
+
+    for (final ldoc in rows) {
+      final id = ldoc.document.docid;
+      final Map<String, dynamic> docMap;
+      if (ldoc.data == null) {
+        // Mirrors _internalGetRaw's metadata-only reconstruction.
+        docMap = {
+          '_id': ldoc.document.docid,
+          '_rev': ldoc.document.rev,
+          '_deleted': true,
+        };
+      } else {
+        docMap = jsonDecode(ldoc.data!) as Map<String, dynamic>;
+        final atts = attsByDoc[ldoc.document.id];
+        if (atts != null) {
+          final attachmentsMap = await _attachmentMapFromRows(
+            atts,
+            attachments,
+          );
+          if (attachmentsMap != null) {
+            docMap['_attachments'] = _attachmentMapToJson(attachmentsMap);
+          }
+        }
+      }
+      result[id] = docMap;
+    }
+    return result;
+  }
+
+  /// Typed variant of [_internalGetManyRaw] (applies
+  /// [CouchDocumentBase.fromMap], like [_internalGet]).
+  Future<Map<String, CouchDocumentBase?>> _internalGetMany(
+    List<String> ids, {
+    bool attachments = false,
+  }) async {
+    final raw = await _internalGetManyRaw(ids, attachments: attachments);
+    return raw.map(
+      (id, map) =>
+          MapEntry(id, map == null ? null : CouchDocumentBase.fromMap(map)),
+    );
   }
 
   Future<CouchDocumentBase?> _internalGet(
@@ -1673,6 +1776,23 @@ class LocalDartCouchDb extends DartCouchDb
         ? await db.getConflictAttachments(conflictRowId)
         : await db.getAttachments(dbdocid);
 
+    return _attachmentMapFromRows(
+      attachments,
+      includeData,
+      maxAttsSinceVersion: maxAttsSinceVersion,
+    );
+  }
+
+  /// Builds the `AttachmentInfo` map from already-loaded attachment metadata
+  /// [attachments] (in `ordering` order). Shared by the single-document and
+  /// the batched read path so both produce identical attachment maps.
+  /// Returns `null` when there are no attachments.
+  Future<Map<String, AttachmentInfo>?> _attachmentMapFromRows(
+    List<LocalAttachment> attachments,
+    bool includeData, {
+    int? maxAttsSinceVersion,
+  }) async {
+    if (attachments.isEmpty) return null;
     Map<String, AttachmentInfo> map = {};
     for (int i = 0; i < attachments.length; ++i) {
       final a = attachments[i];
@@ -1698,6 +1818,21 @@ class LocalDartCouchDb extends DartCouchDb
     }
 
     return map.isEmpty ? null : map;
+  }
+
+  /// Serialises an attachment map for a raw document map (`_attachments`).
+  ///
+  /// `value.toMap()` strips `encoding` via AttachmentInfoRawHook so that
+  /// CouchDB protocol messages never carry it. Re-insert it here so that
+  /// callers of getRaw() / get() can still read AttachmentInfo.encoding.
+  static Map<String, dynamic> _attachmentMapToJson(
+    Map<String, AttachmentInfo> attachmentsMap,
+  ) {
+    return attachmentsMap.map((key, value) {
+      final stub = value.toMap();
+      if (value.encoding != null) stub['encoding'] = value.encoding;
+      return MapEntry(key, stub);
+    });
   }
 
   /// Returns the document(s) matching the requested open revisions.
@@ -1770,7 +1905,11 @@ class LocalDartCouchDb extends DartCouchDb
             cdoc = CouchDocumentBase.fromMap(m);
           }
           res.add(
-            OpenRevsResult(missingRev: null, state: OpenRevsState.ok, doc: cdoc),
+            OpenRevsResult(
+              missingRev: null,
+              state: OpenRevsState.ok,
+              doc: cdoc,
+            ),
           );
           addedRevs.add(c.rev);
         }
@@ -1876,8 +2015,9 @@ class LocalDartCouchDb extends DartCouchDb
 
   /// Reacting to design-document changes (rebuilding views when a map/reduce
   /// function changes) is handled lazily and centrally by [ViewMgr.getView],
-  /// which compares each cached view against the current design document on
-  /// every query and rebuilds on a change — covering all write paths (put,
+  /// which re-validates its cached views against their design documents
+  /// whenever a design document was written since the last check and
+  /// rebuilds on a change — covering all write paths (put,
   /// remove, bulkDocs, replication). This hook is kept as an extension point
   /// and intentionally does nothing.
   Future<void> _checkViewsAfterDesignDocumentChange(DesignDocument doc) async {}
@@ -2489,6 +2629,16 @@ class LocalDartCouchDb extends DartCouchDb
     UpdateMode updateMode = UpdateMode.modeTrue,
     bool updateSeq = false,
   }) async {
+    // Same contract as HttpDartCouchDb (the reference): only
+    // "designdoc/view" is a view. `_all_docs` is not a view in CouchDB; use
+    // allDocs().
+    if (viewPathShort.split('/').length != 2) {
+      throw ArgumentError.value(
+        viewPathShort,
+        'viewPathShort',
+        'expected "designdoc/view"',
+      );
+    }
     ViewCtrl? ctrl = await viewMgr.getView(viewPathShort);
     if (ctrl == null) return null;
     return ctrl.query(
@@ -2563,20 +2713,246 @@ class LocalDartCouchDb extends DartCouchDb
     bool descending = false,
     String? key,
     List<String>? keys,
+  }) {
+    // One read transaction: the row pages, the bodies and total_rows form a
+    // consistent snapshot (writers are additionally excluded by the db mutex
+    // the public entry points hold).
+    return db.transaction(() async {
+      final totalRows = await db.countAllDocs(dbid);
+      final rows = keys != null
+          ? await _allDocsByKeys(
+              keys,
+              includeDocs: includeDocs,
+              attachments: attachments,
+              limit: limit,
+              skip: skip,
+            )
+          : await _allDocsRange(
+              includeDocs: includeDocs,
+              attachments: attachments,
+              startkey: startkey,
+              endkey: endkey,
+              inclusiveEnd: inclusiveEnd,
+              limit: limit,
+              skip: skip,
+              descending: descending,
+              key: key,
+            );
+      final offset = keys != null
+          ? null // CouchDB reports `offset: null` in keys mode
+          : await _allDocsOffset(
+              totalRows: totalRows,
+              startkey: key ?? startkey, // `key` overrides startkey
+              descending: descending,
+              skip: skip,
+            );
+      return ViewResult(totalRows: totalRows, offset: offset, rows: rows);
+    });
+  }
+
+  /// CouchDB's `offset` for `_all_docs` range mode: the rows preceding the
+  /// start position in iteration order, plus [skip], capped at [totalRows].
+  /// The end bound does not influence it.
+  Future<int> _allDocsOffset({
+    required int totalRows,
+    required String? startkey,
+    required bool descending,
+    required int? skip,
   }) async {
-    return _internalQuery(
-      '_all_docs',
-      includeDocs: includeDocs,
-      attachments: attachments,
-      startkey: startkey,
-      endkey: endkey,
-      inclusiveEnd: inclusiveEnd,
-      limit: limit,
-      skip: skip,
-      descending: descending,
-      key: key,
-      keys: keys,
-    ).then((value) => value!);
+    var before = 0;
+    if (startkey != null) {
+      final s = _normalizeAllDocsKey(startkey);
+      if (s is String) {
+        before = await db.countAllDocsBefore(dbid, s, descending: descending);
+      } else {
+        // Doc ids are strings: a non-string start sorts before all of them
+        // (null/bool/number) or after all of them (array/object).
+        final afterAll = _sortsAfterAllStrings(s);
+        before = afterAll != descending ? totalRows : 0;
+      }
+    }
+    final total = before + (skip != null && skip > 0 ? skip : 0);
+    return total < totalRows ? total : totalRows;
+  }
+
+  /// Parses an `_all_docs` bound/key like the view engine does: JSON when it
+  /// decodes (`'"a"'` → `a`, `'123'` → 123), otherwise the raw string.
+  static dynamic _normalizeAllDocsKey(String raw) {
+    try {
+      return jsonDecode(raw);
+    } catch (_) {
+      return raw;
+    }
+  }
+
+  /// CouchDB collation places null, booleans and numbers before every
+  /// string, and arrays and objects after every string. Doc ids are always
+  /// strings, so a non-string bound either excludes nothing or everything.
+  static bool _sortsAfterAllStrings(dynamic v) => v is List || v is Map;
+
+  /// `_all_docs` range mode, served directly from `local_documents` in
+  /// keyset-paginated pages of [AppDatabase.batchReadChunkSize] rows (two
+  /// queries per page with `include_docs`, one without).
+  Future<List<ViewEntry>> _allDocsRange({
+    required bool includeDocs,
+    required bool attachments,
+    required String? startkey,
+    required String? endkey,
+    required bool inclusiveEnd,
+    required int? limit,
+    required int? skip,
+    required bool descending,
+    required String? key,
+  }) async {
+    final rows = <ViewEntry>[];
+    if (limit != null && limit <= 0) return rows;
+
+    // Bounds in docid space. Like CouchDB, `descending` swaps the roles:
+    // startkey is then the (inclusive) upper bound and endkey the lower.
+    String? lower;
+    bool lowerInclusive = true;
+    String? upper;
+    bool upperInclusive = true;
+    bool empty = false;
+
+    void lowerBound(dynamic v, bool inclusive) {
+      if (v is String) {
+        lower = v;
+        lowerInclusive = inclusive;
+      } else if (_sortsAfterAllStrings(v)) {
+        empty = true;
+      }
+    }
+
+    void upperBound(dynamic v, bool inclusive) {
+      if (v is String) {
+        upper = v;
+        upperInclusive = inclusive;
+      } else if (!_sortsAfterAllStrings(v)) {
+        empty = true;
+      }
+    }
+
+    final start = startkey != null ? _normalizeAllDocsKey(startkey) : null;
+    final end = endkey != null ? _normalizeAllDocsKey(endkey) : null;
+    if (!descending) {
+      if (startkey != null) lowerBound(start, true);
+      if (endkey != null) upperBound(end, inclusiveEnd);
+    } else {
+      if (startkey != null) upperBound(start, true);
+      if (endkey != null) lowerBound(end, inclusiveEnd);
+    }
+
+    String? equals;
+    if (key != null) {
+      final k = _normalizeAllDocsKey(key);
+      if (k is String) {
+        equals = k;
+      } else {
+        empty = true; // no doc id equals a non-string key
+      }
+    }
+    if (empty) return rows;
+
+    const pageSize = AppDatabase.batchReadChunkSize;
+    var remaining = limit;
+    var offset = skip != null && skip > 0 ? skip : 0;
+    while (true) {
+      final want = remaining == null || remaining > pageSize
+          ? pageSize
+          : remaining;
+      final page = await db.getAllDocsPage(
+        dbid,
+        lower: lower,
+        lowerInclusive: lowerInclusive,
+        upper: upper,
+        upperInclusive: upperInclusive,
+        equals: equals,
+        descending: descending,
+        limit: want,
+        offset: offset,
+        withBlob: includeDocs,
+      );
+      final docs = includeDocs
+          ? await _docMapsFromRows(page, attachments: attachments)
+          : const <String, Map<String, dynamic>>{};
+      for (final ldoc in page) {
+        final id = ldoc.document.docid;
+        final docMap = docs[id];
+        rows.add(
+          ViewEntry(
+            id: id,
+            key: id,
+            value: {'rev': ldoc.document.rev},
+            doc: docMap == null ? null : CouchDocumentBase.fromMap(docMap),
+          ),
+        );
+      }
+
+      if (remaining != null) remaining -= page.length;
+      if (page.length < want || remaining == 0) break;
+      // Keyset pagination: continue strictly after the last docid.
+      offset = 0;
+      final last = page.last.document.docid;
+      if (descending) {
+        upper = last;
+        upperInclusive = false;
+      } else {
+        lower = last;
+        lowerInclusive = false;
+      }
+    }
+    return rows;
+  }
+
+  /// `_all_docs` keys mode: one row per requested key, in request order
+  /// (duplicates repeat). Keys are raw doc ids. Missing ids and `_local/`
+  /// ids yield `{key, error: not_found}`; deleted documents yield
+  /// `{id, key, value: {rev, deleted: true}, doc: null}` (CouchDB
+  /// behaviour). [skip]/[limit] apply to the key list.
+  Future<List<ViewEntry>> _allDocsByKeys(
+    List<String> keys, {
+    required bool includeDocs,
+    required bool attachments,
+    required int? limit,
+    required int? skip,
+  }) async {
+    Iterable<String> selected = keys;
+    if (skip != null && skip > 0) selected = selected.skip(skip);
+    if (limit != null) selected = selected.take(limit < 0 ? 0 : limit);
+    final requested = selected.toList(growable: false);
+
+    bool isLocal(String id) => id.startsWith('_local/');
+    final found = await db.getDocumentsByIds(dbid, [
+      for (final k in requested)
+        if (!isLocal(k)) k,
+    ], withBlob: includeDocs);
+    final docs = includeDocs
+        ? await _docMapsFromRows(
+            found.values.where((l) => l.document.deleted != true),
+            attachments: attachments,
+          )
+        : const <String, Map<String, dynamic>>{};
+
+    return [
+      for (final k in requested)
+        if (isLocal(k) || found[k] == null)
+          ViewEntry(id: null, key: k, value: null, error: 'not_found')
+        else if (found[k]!.document.deleted == true)
+          ViewEntry(
+            id: k,
+            key: k,
+            value: {'rev': found[k]!.document.rev, 'deleted': true},
+            doc: null,
+          )
+        else
+          ViewEntry(
+            id: k,
+            key: k,
+            value: {'rev': found[k]!.document.rev},
+            doc: docs[k] == null ? null : CouchDocumentBase.fromMap(docs[k]!),
+          ),
+    ];
   }
 
   /// Deletes a single attachment and bumps the document revision.
@@ -2657,7 +3033,10 @@ class LocalDartCouchDb extends DartCouchDb
 
       // No rev, or the winner's rev → the winner's attachment.
       if (rev == null || rev == winnerRow.document.rev) {
-        final att = await db.getAttachment(winnerRow.document.id, attachmentName);
+        final att = await db.getAttachment(
+          winnerRow.document.id,
+          attachmentName,
+        );
         return att == null
             ? null
             : await attachmentStorage.readAttachment(att.id);
@@ -2870,7 +3249,8 @@ class LocalDartCouchDb extends DartCouchDb
           false,
           ignoreDeleted: true,
         );
-        if (winnerRow == null) return; // doc unknown locally — nothing to anchor
+        // doc unknown locally — nothing to anchor
+        if (winnerRow == null) return;
         if (winnerRow.document.rev == rev) return; // it's the winner
         // An ancestor of the winner (anywhere in its `_revisions` chain) is
         // already represented in the tree, not a new leaf — don't record it
@@ -2878,8 +3258,10 @@ class LocalDartCouchDb extends DartCouchDb
         // puller only calls this for source-advertised LEAVES that revsDiff
         // reported missing, so this is a defensive guard.
         final winnerChain = _expandRevisions(
-          (await _getRevs(winnerRow.document.id, winnerRow.document.version))
-              ?.toMap(),
+          (await _getRevs(
+            winnerRow.document.id,
+            winnerRow.document.version,
+          ))?.toMap(),
           winnerRow.document.rev,
         ).toSet();
         if (winnerChain.contains(rev)) return;
@@ -3799,6 +4181,12 @@ class LocalDartCouchDb extends DartCouchDb
                 }
               }
 
+              // If this write tombstoned the winner, promote the best surviving
+              // conflict leaf (CouchDB rule; same as the batch write path).
+              if (isDeleted && existingDoc != null) {
+                await _promoteAfterTombstone(existingDoc.document.id, docId);
+              }
+
               results.add(BulkDocsResult(id: docId, ok: true, rev: docRev));
               for (final id in tombstoneAttachmentIds) {
                 await _deleteAttachmentFile(id);
@@ -3854,14 +4242,17 @@ class LocalDartCouchDb extends DartCouchDb
 
     // --- Phase 1: Parse all incoming docs (capture _revisions for conflict
     // leaf maintenance) ---
-    final parsed = <({
-      String docId,
-      String docRev,
-      int version,
-      bool isDeleted,
-      Map<String, dynamic> docMap,
-      Map<String, dynamic>? revisions,
-    })>[];
+    final parsed =
+        <
+          ({
+            String docId,
+            String docRev,
+            int version,
+            bool isDeleted,
+            Map<String, dynamic> docMap,
+            Map<String, dynamic>? revisions,
+          })
+        >[];
 
     for (final success in docs) {
       final docMap = Map<String, dynamic>.from(success.ok.doc);

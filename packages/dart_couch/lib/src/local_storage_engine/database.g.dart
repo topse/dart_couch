@@ -3197,6 +3197,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     'local_documents_seq',
     'CREATE INDEX local_documents_seq ON local_documents (seq)',
   );
+  late final Index localDocumentsFkdatabaseSeq = Index(
+    'local_documents_fkdatabase_seq',
+    'CREATE INDEX local_documents_fkdatabase_seq ON local_documents (fkdatabase, seq)',
+  );
   late final Index localDocumentsFkdatabaseDocid = Index(
     'local_documents_fkdatabase_docid',
     'CREATE UNIQUE INDEX local_documents_fkdatabase_docid ON local_documents (fkdatabase, docid)',
@@ -3249,6 +3253,10 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     'local_view_entries_docid_index',
     'CREATE INDEX local_view_entries_docid_index ON local_view_entries (docid)',
   );
+  late final Index localViewEntriesFkviewKeyDocid = Index(
+    'local_view_entries_fkview_key_docid',
+    'CREATE INDEX local_view_entries_fkview_key_docid ON local_view_entries (fkview, "key", docid)',
+  );
   @override
   Iterable<TableInfo<Table, Object?>> get allTables =>
       allSchemaEntities.whereType<TableInfo<Table, Object?>>();
@@ -3265,6 +3273,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     localDocumentsDocid,
     localDocumentsVersion,
     localDocumentsSeq,
+    localDocumentsFkdatabaseSeq,
     localDocumentsFkdatabaseDocid,
     revisionHistoriesRevIndex,
     revisionHistoriesVersionIndex,
@@ -3278,6 +3287,7 @@ abstract class _$AppDatabase extends GeneratedDatabase {
     localViewViewPathShortIndex,
     localViewsUnique,
     localViewEntriesDocidIndex,
+    localViewEntriesFkviewKeyDocid,
   ];
 }
 
@@ -3559,7 +3569,7 @@ class $$LocalDatabasesTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<$LocalDatabasesTable, LocalDatabase>(table),
                   $$LocalDatabasesTableReferences(db, table, e),
                 ),
               )
@@ -3576,10 +3586,11 @@ class $$LocalDatabasesTableTableManager
                   getPrefetchedDataCallback: (items) async {
                     return [
                       if (localDocumentsRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalDatabase,
                           $LocalDatabasesTable,
-                          LocalDocument
+                          LocalDocument,
+                          $LocalDocumentsTable
                         >(
                           currentTable: table,
                           referencedTable: $$LocalDatabasesTableReferences
@@ -3590,17 +3601,16 @@ class $$LocalDatabasesTableTableManager
                                 table,
                                 p0,
                               ).localDocumentsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.fkdatabase == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'fkdatabase',
                           typedResults: items,
                         ),
                       if (localViewsRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalDatabase,
                           $LocalDatabasesTable,
-                          LocalView
+                          LocalView,
+                          $LocalViewsTable
                         >(
                           currentTable: table,
                           referencedTable: $$LocalDatabasesTableReferences
@@ -3611,10 +3621,8 @@ class $$LocalDatabasesTableTableManager
                                 table,
                                 p0,
                               ).localViewsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.database == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'database',
                           typedResults: items,
                         ),
                     ];
@@ -4224,7 +4232,7 @@ class $$LocalDocumentsTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<$LocalDocumentsTable, LocalDocument>(table),
                   $$LocalDocumentsTableReferences(db, table, e),
                 ),
               )
@@ -4282,10 +4290,11 @@ class $$LocalDocumentsTableTableManager
                   getPrefetchedDataCallback: (items) async {
                     return [
                       if (documentBlobsRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalDocument,
                           $LocalDocumentsTable,
-                          DocumentBlob
+                          DocumentBlob,
+                          $DocumentBlobsTable
                         >(
                           currentTable: table,
                           referencedTable: $$LocalDocumentsTableReferences
@@ -4296,17 +4305,16 @@ class $$LocalDocumentsTableTableManager
                                 table,
                                 p0,
                               ).documentBlobsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.documentId == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'document_id',
                           typedResults: items,
                         ),
                       if (revisionHistoriesRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalDocument,
                           $LocalDocumentsTable,
-                          RevisionHistory
+                          RevisionHistory,
+                          $RevisionHistoriesTable
                         >(
                           currentTable: table,
                           referencedTable: $$LocalDocumentsTableReferences
@@ -4317,17 +4325,16 @@ class $$LocalDocumentsTableTableManager
                                 table,
                                 p0,
                               ).revisionHistoriesRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.fkdocument == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'fkdocument',
                           typedResults: items,
                         ),
                       if (localConflictRevisionsRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalDocument,
                           $LocalDocumentsTable,
-                          LocalConflictRevision
+                          LocalConflictRevision,
+                          $LocalConflictRevisionsTable
                         >(
                           currentTable: table,
                           referencedTable: $$LocalDocumentsTableReferences
@@ -4338,17 +4345,16 @@ class $$LocalDocumentsTableTableManager
                                 table,
                                 p0,
                               ).localConflictRevisionsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.fkdocument == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'fkdocument',
                           typedResults: items,
                         ),
                       if (localAttachmentsRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalDocument,
                           $LocalDocumentsTable,
-                          LocalAttachment
+                          LocalAttachment,
+                          $LocalAttachmentsTable
                         >(
                           currentTable: table,
                           referencedTable: $$LocalDocumentsTableReferences
@@ -4359,10 +4365,8 @@ class $$LocalDocumentsTableTableManager
                                 table,
                                 p0,
                               ).localAttachmentsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.fkdocument == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'fkdocument',
                           typedResults: items,
                         ),
                     ];
@@ -4585,7 +4589,7 @@ class $$DocumentBlobsTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<$DocumentBlobsTable, DocumentBlob>(table),
                   $$DocumentBlobsTableReferences(db, table, e),
                 ),
               )
@@ -4930,7 +4934,7 @@ class $$RevisionHistoriesTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<$RevisionHistoriesTable, RevisionHistory>(table),
                   $$RevisionHistoriesTableReferences(db, table, e),
                 ),
               )
@@ -5353,7 +5357,10 @@ class $$LocalConflictRevisionsTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<
+                    $LocalConflictRevisionsTable,
+                    LocalConflictRevision
+                  >(table),
                   $$LocalConflictRevisionsTableReferences(db, table, e),
                 ),
               )
@@ -5402,10 +5409,11 @@ class $$LocalConflictRevisionsTableTableManager
                   getPrefetchedDataCallback: (items) async {
                     return [
                       if (localAttachmentsRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalConflictRevision,
                           $LocalConflictRevisionsTable,
-                          LocalAttachment
+                          LocalAttachment,
+                          $LocalAttachmentsTable
                         >(
                           currentTable: table,
                           referencedTable:
@@ -5417,10 +5425,8 @@ class $$LocalConflictRevisionsTableTableManager
                                 table,
                                 p0,
                               ).localAttachmentsRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.fkconflict == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'fkconflict',
                           typedResults: items,
                         ),
                     ];
@@ -5875,7 +5881,7 @@ class $$LocalAttachmentsTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<$LocalAttachmentsTable, LocalAttachment>(table),
                   $$LocalAttachmentsTableReferences(db, table, e),
                 ),
               )
@@ -6299,7 +6305,7 @@ class $$LocalViewsTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<$LocalViewsTable, LocalView>(table),
                   $$LocalViewsTableReferences(db, table, e),
                 ),
               )
@@ -6347,10 +6353,11 @@ class $$LocalViewsTableTableManager
                   getPrefetchedDataCallback: (items) async {
                     return [
                       if (localViewEntriesRefs)
-                        await $_getPrefetchedData<
+                        await $_getPrefetchedDataByColumns<
                           LocalView,
                           $LocalViewsTable,
-                          LocalViewEntry
+                          LocalViewEntry,
+                          $LocalViewEntriesTable
                         >(
                           currentTable: table,
                           referencedTable: $$LocalViewsTableReferences
@@ -6361,10 +6368,8 @@ class $$LocalViewsTableTableManager
                                 table,
                                 p0,
                               ).localViewEntriesRefs,
-                          referencedItemsForCurrentItem:
-                              (item, referencedItems) => referencedItems.where(
-                                (e) => e.fkview == item.id,
-                              ),
+                          currentColumn: 'id',
+                          referencedColumn: 'fkview',
                           typedResults: items,
                         ),
                     ];
@@ -6643,7 +6648,7 @@ class $$LocalViewEntriesTableTableManager
           withReferenceMapper: (p0) => p0
               .map(
                 (e) => (
-                  e.readTable(table),
+                  e.readTable<$LocalViewEntriesTable, LocalViewEntry>(table),
                   $$LocalViewEntriesTableReferences(db, table, e),
                 ),
               )

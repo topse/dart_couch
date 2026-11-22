@@ -13,6 +13,7 @@ export 'src/http_dart_couch_db.dart';
 export 'src/http_dart_couch_server.dart';
 export 'src/local_dart_couch_db.dart';
 export 'src/local_dart_couch_server.dart';
+export 'src/local_storage_engine/db_query_stats.dart' show DbQueryStats;
 export 'src/messages/bulk_get.dart';
 export 'src/messages/bulk_get_multipart.dart';
 export 'src/messages/changes_result.dart';

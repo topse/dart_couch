@@ -191,14 +191,14 @@ packages:
       path: ".."
       relative: true
     source: path
-    version: "1.0.20+1"
+    version: "1.0.26+1"
   dart_couch_widgets:
     dependency: "direct main"
     description:
       path: "../../dart_couch_widgets"
       relative: true
     source: path
-    version: "1.0.20+1"
+    version: "1.0.24+1"
   dart_mappable:
     dependency: "direct main"
     description:

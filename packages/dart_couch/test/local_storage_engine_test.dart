@@ -100,9 +100,20 @@ void main() {
         ),
       );
 
-  group('schema v6', () {
-    test('schemaVersion is 6', () {
-      expect(db.schemaVersion, 6);
+  group('schema v8', () {
+    test('schemaVersion is 8', () {
+      expect(db.schemaVersion, 8);
+    });
+
+    test('v7 read-path indices exist', () async {
+      final rows = await db
+          .customSelect(
+            "SELECT name FROM sqlite_master WHERE type = 'index'",
+          )
+          .get();
+      final names = rows.map((r) => r.read<String>('name')).toSet();
+      expect(names, contains('local_view_entries_fkview_key_docid'));
+      expect(names, contains('local_documents_fkdatabase_seq'));
     });
 
     test('local_conflict_revisions exists and starts empty', () async {
@@ -317,6 +328,93 @@ void main() {
       // The originally-promoted leaf file id is unchanged (metadata-only repoint).
       final repointed = await db.getConflictAttachments(newConflict);
       expect(repointed.map((a) => a.id), contains(leafAttId));
+    });
+  });
+  group('batched reads (getDocumentsByIds / getAttachmentsForDocs)', () {
+    test('getDocumentsByIds spans chunks, dedups, skips unknown ids and '
+        'reports hasAttachments', () async {
+      final dbId = await insertDb('db1');
+      final otherDb = await insertDb('db2');
+      const n = AppDatabase.batchReadChunkSize * 2 + 7;
+      final rowIds = <int>[];
+      for (var i = 0; i < n; i++) {
+        final row = await insertWinnerDoc(dbId, 'd$i', '1-a', 1);
+        rowIds.add(row);
+        await db
+            .into(db.documentBlobs)
+            .insert(
+              DocumentBlobsCompanion(
+                documentId: Value(row),
+                data: Value('{"_id":"d$i","_rev":"1-a"}'),
+              ),
+            );
+      }
+      // Same docid in another database must not leak in.
+      await insertWinnerDoc(otherDb, 'd0', '1-x', 1);
+      await insertWinnerAttachment(rowIds[3], 'w.txt');
+      // A conflict-leaf attachment alone does not count as hasAttachments.
+      final conflictRow = await insertConflict(rowIds[4], '1-b', 1);
+      await insertConflictAttachment(rowIds[4], conflictRow, 'c.txt');
+
+      final ids = [
+        for (var i = n - 1; i >= 0; i--) 'd$i',
+        'd3',
+        'missing',
+      ];
+      final res = await db.getDocumentsByIds(dbId, ids);
+      expect(res.length, n);
+      expect(res.containsKey('missing'), isFalse);
+      expect(res['d0']!.document.rev, '1-a');
+      expect(res['d5']!.data, '{"_id":"d5","_rev":"1-a"}');
+      expect(res['d3']!.hasAttachments, isTrue);
+      expect(res['d4']!.hasAttachments, isFalse);
+      expect(res['d5']!.hasAttachments, isFalse);
+
+      final noBlob = await db.getDocumentsByIds(dbId, [
+        'd1',
+      ], withBlob: false);
+      expect(noBlob['d1']!.data, equals(null));
+
+      // getDocument reports hasAttachments too (single-doc fast path).
+      expect((await db.getDocument(dbId, 'd3', true))!.hasAttachments, isTrue);
+      expect((await db.getDocument(dbId, 'd5', true))!.hasAttachments, isFalse);
+    });
+
+    test('getAttachmentsForDocs returns winner attachments in ordering '
+        'order, grouped per document', () async {
+      final dbId = await insertDb('db1');
+      final docA = await insertWinnerDoc(dbId, 'a', '1-a', 1);
+      final docB = await insertWinnerDoc(dbId, 'b', '1-a', 1);
+      final docC = await insertWinnerDoc(dbId, 'c', '1-a', 1);
+      Future<void> att(int doc, String name, int ordering) => db
+          .into(db.localAttachments)
+          .insert(
+            LocalAttachmentsCompanion(
+              fkdocument: Value(doc),
+              ordering: Value(ordering),
+              revpos: const Value(1),
+              name: Value(name),
+              length: const Value(3),
+              contentType: const Value('text/plain'),
+              digest: const Value('md5-x'),
+            ),
+          );
+      await att(docA, 'z', 1);
+      await att(docB, 'second', 2);
+      await att(docA, 'y', 2);
+      await att(docB, 'first', 1);
+      final conflictRow = await insertConflict(docA, '1-b', 1);
+      await insertConflictAttachment(docA, conflictRow, 'leaf.txt');
+
+      final res = await db.getAttachmentsForDocs([docA, docB, docC, docA]);
+      expect(res.keys.toSet(), {docA, docB});
+      expect(res[docA]!.map((a) => a.name), ['z', 'y']);
+      expect(res[docB]!.map((a) => a.name), ['first', 'second']);
+      // Identical to the single-document lookup.
+      expect(
+        res[docB]!.map((a) => a.id),
+        (await db.getAttachments(docB)).map((a) => a.id),
+      );
     });
   });
 }

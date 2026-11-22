@@ -1,3 +1,26 @@
+# Changelog
+
+## 1.0.26
+* performance: batched document loading in local `allDocs`/`query`/`get`
+* performance: local changes feed reads changes in pages
+* performance: local `allDocs` reads the documents table directly
+* performance: shared document cache for `use*` streams
+* performance: faster local view indexing and view lookup
+* behaviour change: local `allDocs(keys)` reports deleted documents like CouchDB
+* behaviour change: documents emitted by `use*` streams may be shared, treat them as immutable
+* behaviour change: `query()` throws `ArgumentError` for a path that is not `designdoc/view`; local `query('_all_docs')` is gone, use `allDocs()`
+* bugfix: views of several local databases interfered with each other
+* bugfix: `useDoc` could emit a stale document after a deletion
+* bugfix: `use*` streams could postpone updates indefinitely under continuous writes
+* bugfix: http `get(attachments: true)` returned gzip-compressed data for compressible attachments
+* bugfix: http `allDocs` failed with `limit`/`skip`
+* bugfix: http `allDocs`/`query` with attachments did not report `encoding`
+* bugfix: local `allDocs` reported a wrong `offset`
+* bugfix: local replication of a tombstone on the winning branch did not promote the surviving conflict leaf
+* bugfix: keyed `useAllDocs` did not update `total_rows` on changes of other documents
+* add `useCacheCapacity`, `useCacheStats` and `DbQueryStats` diagnostics
+* fix QuickJS build with MSVC on Windows
+
 ## 1.0.24
 * update libs
 

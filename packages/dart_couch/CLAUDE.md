@@ -44,7 +44,10 @@ The library is a pure Dart package and can be used in CLI tools, servers, or any
 
 - ❌ NO arbitrary thresholds (e.g., "if count < 10")
 - ❌ NO "likely" or "probably" logic
-- ❌ Future.delay is not to be used as it is not deterministic
+- ❌ Future.delay is not to be used as it is not deterministic. Only exception: inside a loop that
+  waits for a defined, checkable state (`waitForCondition` in `test/helper/helper.dart`). Never wait
+  for the sake of waiting (fixed settle times) — also not for negative assertions ("nothing more
+  happens"): those need a defined state as well (e.g. an idle/processed signal).
 - ✅ USE deterministic checks (sequence regression, UUID mismatches)
 - ✅ USE marker documents for state tracking
 
@@ -97,6 +100,7 @@ Tests run in parallel (`dart_test.yaml` sets `concurrency: 4`). `dart test` runs
 - **Self-allocated explicit ports.** `startCouchDb` (helper.dart) and `CouchTestManager._startCouchDb` pick a free host port themselves via `CouchTestManager.findFreePort()` and run the container with an **explicit** `-p <port>:5984` mapping. This is deliberate: Docker's `-p 0:5984` re-randomizes the host port on every `docker start`, which breaks pause/resume — a stopped-then-started container comes back on a *different* port while the long-lived `OfflineFirstServer` (and the URI polled by `_waitForCouchDb`) still point at the old, now-dead port. An explicit mapping is preserved across stop/start, so the port is stable for the container's lifetime. The port is stored in the per-suite top-level `couchPort`; use the `couchUri` getter (helper.dart) or `cm.uri` (CouchTestManager) instead of a hardcoded `http://localhost:5984`.
   - `findFreePort()` binds an ephemeral socket (`bind(0)`) to get an OS-free port, **and** excludes every host port already claimed by any existing Docker container — running *or stopped* — read from each container's `HostConfig.PortBindings` via `docker ps -aq` + `docker inspect` (`_dockerReservedHostPorts`). `bind(0)` alone only proves a port is free *now*; a stopped container's mapping is invisible at the socket level, so without the exclusion a reused port would collide once both containers are (re)started. Excluding them keeps all test containers mutually restartable.
   - A tiny window remains between releasing the socket and `docker run` binding the port (a concurrently-starting sibling's container doesn't exist yet, so it isn't in the reserved set). On that rare collision `docker run` fails loudly with "port is already allocated"; the start loop re-allocates a fresh port and retries (up to 5 times). A **pinned** port (see relogin below) must not move, so a collision there is a hard failure instead.
+- **Per-container CouchDB config.** `couchdb-test-config/*.ini` is a read-only template: `CouchTestManager.createAndStartCouchContainer` copies it into each container (`docker create` + `docker cp` + `docker start`). Never bind-mount the directory: the CouchDB entrypoint chowns `local.d` to uid 5984 and CouchDB persists config changes there, so a shared mount let containers rewrite the repo template and each other's configuration.
 - **Unique SQLite dirs.** `prepareSqliteDir()` / `CouchTestManager` use `Directory.systemTemp.createTempSync(...)` so every call gets a unique path. Drift/sqlite only conflicts when two opens hit the *same* file, so distinct paths keep suites isolated even within one process.
 - **Targeted cleanup only.** Each suite removes **only its own** container via `shutdownCouchDb` / `_shutdownCouchDb` (`docker stop` then `docker rm -fv <id>`), called from `tearDownAll` (`cm.dispose()`), `tearDownAllHttpFunction`, or a direct call. There is **no** global `docker container/volume prune` and **no** "kill all CouchDB containers" step — those destroy sibling suites' live containers. All test containers carry the `dart_couch_test` label; leftovers from crashed runs are cleaned by `tool/clean_test_containers.sh` (run manually, never from inside a suite).
 - **Offline / relogin tests.** Tests that simulate a *permanently* unreachable server (one that never comes back up) use `deadCouchUri()` — an OS-assigned free port with nothing listening. Tests that simulate **relogin** (server goes down then comes back at the *same* address) instead call `reserveCouchPort()`, which reserves the suite's port and points `couchUri` at it without starting a container (so `couchUri` is dead), then later `startCouchDb(..., port: couchPort)` brings the container up on that exact port — the same `couchUri` transitions dead → alive. Using two *different* URIs for the dead and alive phases would not actually exercise relogin. `proxy_login_test` reuses the freed CouchDB port for its nginx container so the server reconnects to the same address.
@@ -173,8 +177,8 @@ selection must NOT use app heuristics or random tie-breaking.
   re-request known conflict leaves.
 - **Views** receive the winner **plus a `_conflicts` member** when the doc is in
   conflict (Phase 6 — matches CouchDB; lets `function(doc){ if(doc._conflicts) … }`
-  locate conflicts). Injected in `view_ctrl._updateViewEntries` via
-  `AppDatabase.liveConflictRevsByDoc`. `_all_docs?conflicts=true` is ignored, as in
+  locate conflicts). Injected per indexing page in `view_ctrl._indexPage` via
+  `AppDatabase.liveConflictRevsForDocs`. `_all_docs?conflicts=true` is ignored, as in
   CouchDB.
 
 ### Tree changes bump `seq`; promotion; forwarding
@@ -241,6 +245,17 @@ clause** (winner determinism, 409 avoidance, tombstone/promotion semantics,
 
 Known deferred parity gap: `getOpenRevs(attachments:)` (byte parity is already
 covered via `getAttachment(rev:)` and `get(rev:, attachments:true)`).
+
+## Local Storage Performance (requirements)
+
+On native platforms SQLite runs in a background isolate, but **every drift query is an isolate round trip whose bookkeeping runs on the calling isolate** — in a Flutter app the UI isolate. On slow devices that per-query overhead (~1 ms) dominates frame time even though SQLite itself is fast. Profiling an app with a ~5,000-document database showed 10 s UI freezes from per-document query patterns. Therefore:
+
+- **No per-document queries on read paths.** Loading N documents (allDocs/query with `include_docs`, view indexing, the local changes feed) must cost a number of queries proportional to N/500, not N. Batch with `IN (...)` in chunks of at most 500 ids.
+- **No `json_each` / JSON1 dependency.** `package:sqlite3` bundles its own SQLite by default, but an app may switch to the system SQLite (`hooks: user_defines: sqlite3: source: system`), which can be old. Never refuse to open a database because of the SQLite version — log it instead.
+- **No full-table watches.** Change detection reads only rows with `seq` greater than the last seen seq.
+- **The `use*` document cache is read-only and serves only `use*` streams.** Direct calls (`get`, `allDocs`, `query`, `put`, replication) never read from it. A cached body is emitted only at the exact rev the emit's own fresh metadata reports; anything unproven is fetched. Feed errors, ends and restarts invalidate it. It must never be able to make a reader diverge from the database.
+- **Every `use*` parameter combination stays supported** with results identical to the corresponding direct `query()`/`allDocs()` call; a combination that can't safely use the cache bypasses it.
+- `DbQueryStats` (opt-in query counter) and `tool/bench_view_index.dart` exist to measure query counts; query-budget tests guard the rules above.
 
 ## Local Attachment Storage
 
@@ -444,7 +459,7 @@ Includes: `native/`, `third_party/quickjs/`
 
 Defines: `CONFIG_VERSION`, `_GNU_SOURCE`, `CONFIG_BIGNUM`, `QUICKJS_WRAPPER_BUILD`
 
-The hook runs automatically when `dart run`, `dart test`, or `dart compile` is invoked — no manual compilation step is needed. On web targets, the hook exits early (`if (!input.config.buildCodeAssets) return;`) since there is no native code to compile. On Windows, the hook includes a workaround to find MSVC tools when the VS install path contains spaces.
+The hook runs automatically when `dart run`, `dart test`, or `dart compile` is invoked — no manual compilation step is needed. On web targets, the hook exits early (`if (!input.config.buildCodeAssets) return;`) since there is no native code to compile. On Windows, the hook includes a workaround to find MSVC tools when the VS install path contains spaces. QuickJS needs C11 (`_Alignas`), so MSVC gets `/std:c11` — keyed on the **target** OS, not the host: a Windows host building for Android uses the NDK's clang, which rejects MSVC flags.
 
 ## Package Structure
 
@@ -456,6 +471,42 @@ This is a monorepo with two packages:
 | `dart_couch_widgets` | `packages/dart_couch_widgets/` | Flutter widgets and helpers (depends on `dart_couch`) |
 
 The core package uses `DcValueNotifier` / `DcValueListenable` (in `lib/src/value_notifier.dart`) as pure-Dart replacements for Flutter's `ValueNotifier` / `ValueListenable`. The widget package provides `DcValueListenableBuilder` to bridge these into Flutter's widget tree.
+
+## Known CouchDB deviations and quirks (RE-CHECK on every CouchDB major release, e.g. 4.0)
+
+`HttpDartCouchDb` (= CouchDB) is the reference; `LocalDartCouchDb` must match it.
+The points below are places where CouchDB itself is inconsistent or where we
+deliberately do not reproduce its output byte for byte. Verified against
+`couchdb:latest` 3.x. **When a new CouchDB major version is released, re-probe
+each point (e.g. with curl against a fresh container) and update this list,
+the code and the tests.**
+
+1. **View `keys` with duplicate keys: row order is undefined.** For
+   `POST /_view?keys=["g0","g2","g0"]` (clustered, q > 1 shards) CouchDB 3.x
+   returns the rows of one key in an order that differs between
+   `include_docs=true` and `include_docs=false`, and between GET and POST. Rows
+   of a repeated key can even be spread across its occurrences (observed
+   `d0 d5 d2 d0 d3 d3` instead of `d0 d3 d2 d5 d0 d3`). `useView(includeDocs:
+   true)` takes the rows from `query(includeDocs: false)` (it always has), so on
+   HTTP its order may differ from a direct `query(includeDocs: true)`.
+   Tests compare such results as a multiset of rows (`_normDupKeys` in
+   `test/use_cache_test.dart`). Local returns the correct, deterministic order.
+2. **`_all_docs` `offset`** = rows before the start position in iteration
+   order (descending: the ids above `startkey`; `key=` counts like a start key;
+   `endkey` has no effect) + `skip`, capped at `total_rows`. Keys mode:
+   `offset: null`. Local implements this for `_all_docs`. **Local views still
+   report `offset = skip`** (known gap, not yet aligned).
+3. **Attachment `encoding` visibility.** CouchDB only reports
+   `encoding`/`encoded_length` with `att_encoding_info=true`, but its multipart
+   `GET /db/doc?attachments=true` stubs always carry them. Inline `data` is
+   always decoded, with or without `att_encoding_info`. `HttpDartCouchDb`
+   therefore always requests `att_encoding_info` for `allDocs`/`query` with
+   inline attachments, so they match `get(attachments: true)`. Local always
+   reports the stored `encoding`, including in stubs without data (HTTP only
+   with `attEncodingInfo`).
+4. **`total_rows` in keyed `_all_docs`** counts the whole database. Keyed
+   `useAllDocs` streams therefore re-check it on every change, also for ids
+   outside `keys`, and emit only when it changed.
 
 ## Login error classification (requirement)
 `HttpDartCouchServer.login()` MUST classify a non-JSON / non-CouchDB response

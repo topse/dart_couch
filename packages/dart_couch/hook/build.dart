@@ -33,7 +33,12 @@ void main(List<String> args) async {
     if (!input.config.buildCodeAssets) return;
 
     final effectiveInput = await _withWindowsMsvcWorkaround(input);
-    final cFlags = Platform.isWindows
+    // MSVC defaults to C89-ish mode; current QuickJS uses C11 `_Alignas`.
+    // Keyed on the *target* OS: on a Windows host, Android builds use the
+    // NDK's clang, which rejects MSVC-style flags.
+    final cFlags = input.config.code.targetOS == OS.windows
+        ? const <String>['/std:c11']
+        : Platform.isWindows
         ? const <String>[]
         : _nonWindowsWarningFlags;
     final cLibraries = input.config.code.targetOS == OS.android
