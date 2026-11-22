@@ -1,4 +1,6 @@
 # Changelog
+## 1.0.28
+* corrent version.dart
 
 ## 1.0.26
 * performance: batched document loading in local `allDocs`/`query`/`get`
